@@ -4,7 +4,7 @@ import re
 import io
 
 # -----------------------------------------------------------------------------
-# 0. 페이지 기본 설정 (항상 최상단에 위치)
+# 0. 페이지 기본 설정
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="학생부 점검 도우미", layout="wide")
 
@@ -76,7 +76,6 @@ def process_hang(df_raw, grade_class):
         elif '종합의견' in col: rename_map[col] = '내용'
     df = df.rename(columns=rename_map)
     
-    # 필수 컬럼 확인
     if '번호' not in df.columns or '내용' not in df.columns: return None
         
     df['번호'] = pd.to_numeric(df['번호'], errors='coerce')
@@ -148,7 +147,6 @@ def process_chang(df_raw, grade_class):
             
     if header_idx == -1: return None
     
-    # 2단 헤더 병합 로직
     cols = df_raw.iloc[header_idx].fillna('').astype(str).values.tolist()
     
     if header_idx > 0:
@@ -202,7 +200,6 @@ def detect_duplicates(df):
     df['비고(중복문장)'] = ''
     df['중복색상'] = '' 
     
-    # 🎨 파스텔톤 컬러 팔레트
     color_palette = [
         '#ffb3ba', '#ffdfba', '#ffffba', '#baffc9', '#bae1ff', 
         '#e8baff', '#ffbaff', '#ffc4e1', '#e2f0cb', '#ffcfd2',
@@ -224,7 +221,6 @@ def detect_duplicates(df):
         
         duplicate_sentences = {s for s, count in sentence_counts.items() if count > 1}
         
-        # 중복 문장별 고유 색상 매핑
         color_map = {}
         for i, dup_sent in enumerate(duplicate_sentences):
             color_map[dup_sent] = color_palette[i % len(color_palette)]
@@ -242,41 +238,43 @@ def detect_duplicates(df):
 
     return df
 
-def to_excel_with_style(df):
-    """엑셀 스타일링 및 저장 (특정 열만 색상 반영)"""
+def to_excel_multiple_sheets(df_dict):
+    """여러 데이터프레임을 탭(시트)별로 엑셀에 저장"""
     output = io.BytesIO()
-    save_cols = [c for c in df.columns if c not in ['중복여부', '중복색상']]
-    
-    def style_duplicate_excel(row):
-        styles = [''] * len(row)
-        if row.get('중복여부', False) and row.get('중복색상', ''):
-            bg_color = row['중복색상']
-            # 🎨 과목/영역, 번호, 내용에만 배경색 적용
-            for col in ['과목/영역', '번호', '내용']:
-                if col in row.index:
-                    try:
-                        idx = row.index.get_loc(col)
-                        styles[idx] = f'background-color: {bg_color}'
-                    except KeyError: pass
-            
-            # 비고(중복문장) 열은 빨간색 텍스트
-            if '비고(중복문장)' in row.index:
-                try:
-                    note_idx = row.index.get_loc('비고(중복문장)')
-                    styles[note_idx] = 'color: red;'
-                except KeyError: pass
-                
-        return styles
-
-    styler = df.style.apply(style_duplicate_excel, axis=1)
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        styler.to_excel(writer, index=False, columns=save_cols, sheet_name='정리결과')
-        worksheet = writer.sheets['정리결과']
-        for idx, col in enumerate(save_cols):
-            width = 50 if '내용' in col or '비고' in col else 12
-            worksheet.column_dimensions[chr(65 + idx)].width = width
+        for file_name, df in df_dict.items():
+            # 엑셀 시트명은 31자로 제한되고 특수문자 사용이 불가능하므로 이름 정제
+            safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '', file_name)[:31]
             
+            save_cols = [c for c in df.columns if c not in ['중복여부', '중복색상']]
+            
+            def style_duplicate_excel(row):
+                styles = [''] * len(row)
+                if row.get('중복여부', False) and row.get('중복색상', ''):
+                    bg_color = row['중복색상']
+                    for col in ['과목/영역', '번호', '내용']:
+                        if col in row.index:
+                            try:
+                                idx = row.index.get_loc(col)
+                                styles[idx] = f'background-color: {bg_color}'
+                            except KeyError: pass
+                    
+                    if '비고(중복문장)' in row.index:
+                        try:
+                            note_idx = row.index.get_loc('비고(중복문장)')
+                            styles[note_idx] = 'color: red;'
+                        except KeyError: pass
+                return styles
+
+            styler = df.style.apply(style_duplicate_excel, axis=1)
+            styler.to_excel(writer, index=False, columns=save_cols, sheet_name=safe_sheet_name)
+            
+            worksheet = writer.sheets[safe_sheet_name]
+            for idx, col in enumerate(save_cols):
+                width = 50 if '내용' in col or '비고' in col else 12
+                worksheet.column_dimensions[chr(65 + idx)].width = width
+                
     return output.getvalue()
 
 # -----------------------------------------------------------------------------
@@ -290,6 +288,7 @@ st.markdown("""
 **기능:**
   1. xlsx_data 파일 다운로드 및 업로드 시 **자동 분류 및 정리**
   2. **복붙 의심 문장 그룹별 다른 색상 표시 (과목, 번호, 내용 강조)**
+  3. **여러 파일 업로드 시 탭(Tab)으로 구분하여 표시**
 """)
 
 uploaded_files = st.file_uploader(
@@ -299,7 +298,7 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    all_results = []
+    processed_data_dict = {} # 파일명별로 데이터프레임을 저장할 딕셔너리
     
     with st.status("파일 분석 및 처리 중...", expanded=True) as status:
         for file in uploaded_files:
@@ -328,25 +327,26 @@ if uploaded_files:
                 continue
                 
             if processed_df is not None and not processed_df.empty:
-                all_results.append(processed_df)
+                # 개별 파일에 대해 중복 검사 및 정렬 수행
+                processed_df = processed_df.sort_values(by=['과목/영역', '번호'])
+                processed_df = detect_duplicates(processed_df)
+                
+                # 번호를 정수형(int)으로 변환
+                processed_df['번호'] = pd.to_numeric(processed_df['번호']).astype(int)
+                
+                # 컬럼 순서 지정
+                ordered_cols = ['학년 반', '학기', '과목/영역', '번호', '시수', '내용', '비고(중복문장)', '중복여부', '중복색상']
+                processed_df = processed_df[ordered_cols]
+                
+                # 딕셔너리에 저장
+                processed_data_dict[file.name] = processed_df
                 st.write(f"✅ {file.name} ({type_label} / {grade_class}) - {len(processed_df)}명 처리")
             else:
                 st.warning(f"⚠️ {file.name}: 데이터 추출 실패")
 
         status.update(label="모든 파일 처리 완료!", state="complete", expanded=False)
 
-    if all_results:
-        final_df = pd.concat(all_results, ignore_index=True)
-        final_df = final_df.sort_values(by=['과목/영역', '번호'])
-        final_df = detect_duplicates(final_df)
-        
-        # 🔢 번호를 정수형(int)으로 변환
-        final_df['번호'] = pd.to_numeric(final_df['번호']).astype(int)
-        
-        # 📌 요청하신 컬럼 순서 지정
-        ordered_cols = ['학년 반', '학기', '과목/영역', '번호', '시수', '내용', '비고(중복문장)', '중복여부', '중복색상']
-        final_df = final_df[ordered_cols]
-        
+    if processed_data_dict:
         st.divider()
         st.subheader("📊 결과 미리보기")
         
@@ -362,24 +362,35 @@ if uploaded_files:
                             styles[idx] = f'background-color: {bg_color}'
                         except KeyError: pass
             return styles
-            
-        st.dataframe(
-            final_df.style.apply(highlight_row_web, axis=1),
-            column_config={
-                "시수": st.column_config.TextColumn("시수", width="small"),
-                "비고(중복문장)": st.column_config.TextColumn("⚠️ 복붙 의심 문장", width="medium"),
-                "중복여부": None, # 화면에서 숨김
-                "중복색상": None  # 화면에서 숨김
-            },
-            use_container_width=True
-        )
         
-        excel_data = to_excel_with_style(final_df)
+        # 탭 생성
+        tab_names = list(processed_data_dict.keys())
+        tabs = st.tabs(tab_names)
+        
+        # 각 탭에 해당 파일의 데이터프레임 표시
+        for tab, file_name in zip(tabs, tab_names):
+            with tab:
+                df_to_show = processed_data_dict[file_name]
+                st.dataframe(
+                    df_to_show.style.apply(highlight_row_web, axis=1),
+                    column_config={
+                        "시수": st.column_config.TextColumn("시수", width="small"),
+                        "비고(중복문장)": st.column_config.TextColumn("⚠️ 복붙 의심 문장", width="medium"),
+                        "중복여부": None, # 화면에서 숨김
+                        "중복색상": None  # 화면에서 숨김
+                    },
+                    use_container_width=True
+                )
+        
+        st.divider()
+        
+        # 통합 엑셀 다운로드 (시트 분리)
+        excel_data = to_excel_multiple_sheets(processed_data_dict)
         
         st.download_button(
-            label="📥 통합 엑셀 파일 다운로드 (.xlsx)",
+            label="📥 전체 탭 통합 엑셀 다운로드 (시트별 분리)",
             data=excel_data,
-            file_name="생기부_통합_정리결과.xlsx",
+            file_name="생기부_정리결과_전체.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
