@@ -79,7 +79,7 @@ def process_hang(df_raw, grade_class):
     
     df['번호'] = df['번호'].ffill()
     df = df.dropna(subset=['번호'])
-    df['번호'] = df['번호'].astype(int) # [요구사항 3] 번호 정수형 변환
+    df['번호'] = df['번호'].astype(int) 
     
     df_grouped = df.groupby('번호')['내용'].apply(lambda x: ' '.join(x.astype(str))).reset_index()
     
@@ -122,7 +122,7 @@ def process_kyo(df_raw, grade_class):
     df['학기'] = df['학기'].ffill()
     
     df = df.dropna(subset=['번호', '내용'])
-    df['번호'] = df['번호'].astype(int) # [요구사항 3] 번호 정수형 변환
+    df['번호'] = df['번호'].astype(int) 
     
     df_grouped = df.groupby(['번호', '학기', '과목/영역'])['내용'].apply(lambda x: ' '.join(x.astype(str))).reset_index()
     
@@ -176,7 +176,7 @@ def process_chang(df_raw, grade_class):
     df['시수'] = df['시수'].ffill()
     
     df = df.dropna(subset=['번호'])
-    df['번호'] = df['번호'].astype(int) # [요구사항 3] 번호 정수형 변환
+    df['번호'] = df['번호'].astype(int)
     
     df = df[df['내용'].astype(str) != '희망분야']
     df = df[~df['내용'].astype(str).str.contains('희망분야', na=False)]
@@ -190,22 +190,20 @@ def process_chang(df_raw, grade_class):
     return df_grouped
 
 # -----------------------------------------------------------------------------
-# 3. 중복 탐지 로직 (색상 매핑 추가)
+# 3. 중복 탐지 및 엑셀 스타일 로직
 # -----------------------------------------------------------------------------
 
-# 시각적으로 구분이 잘 되는 파스텔톤 색상 팔레트
 COLOR_PALETTE = [
     '#ffadad', '#ffd6a5', '#fdffb6', '#caffbf', '#9bf6ff', '#a0c4ff', '#bdb2ff', '#ffc6ff', '#fffffc'
 ]
 
 @st.cache_data
 def detect_duplicates(df):
-    """복붙(중복) 문장 탐지 및 색상 매핑"""
     if df.empty: return df
     
     df['중복여부'] = False
     df['복붙 의심 문장'] = ''
-    df['색상'] = '' # 엑셀/웹 스타일링을 위한 숨김 컬럼
+    df['색상'] = '' 
     df['과목/영역'] = df['과목/영역'].fillna('기타')
     
     color_idx = 0
@@ -215,7 +213,6 @@ def detect_duplicates(df):
         if len(group) < 2: continue
         
         sentence_counts = {}
-        # [개선] 마침표가 누락된 경우도 대비해 줄바꿈 및 문장부호로 분리 후 10글자 이상만 추출
         for idx, row in group.iterrows():
             content = str(row['내용'])
             sentences = [s.strip() for s in re.split(r'[.!?\n]+', content) if len(s.strip()) >= 10]
@@ -224,7 +221,6 @@ def detect_duplicates(df):
         
         duplicate_sentences = {s for s, count in sentence_counts.items() if count > 1}
         
-        # 중복 문장마다 고유한 색상 부여
         for dup_sent in duplicate_sentences:
             if dup_sent not in duplicate_color_map:
                 duplicate_color_map[dup_sent] = COLOR_PALETTE[color_idx % len(COLOR_PALETTE)]
@@ -239,35 +235,27 @@ def detect_duplicates(df):
                 df.at[idx, '중복여부'] = True
                 unique_dupes = list(set(found_duplicates))
                 df.at[idx, '복붙 의심 문장'] = " / ".join(unique_dupes)
-                # 첫 번째 발견된 중복 문장의 색상을 해당 행의 테마색으로 지정
                 df.at[idx, '색상'] = duplicate_color_map[unique_dupes[0]]
 
-    # [요구사항 1] 열 표시 순서 정렬
     ordered_cols = ['학년 반', '학기', '과목/영역', '번호', '시수', '내용', '복붙 의심 문장', '중복여부', '색상']
-    # 혹시 누락된 컬럼이 있을 수 있으므로 교집합으로 순서 재정렬
     final_cols = [c for c in ordered_cols if c in df.columns] 
     return df[final_cols]
 
 def style_dataframe(df_to_style):
-    """Pandas Styler를 사용해 과목/영역, 내용, 복붙의심문장 컬럼에 배경색 적용"""
     def row_style(row):
         styles = [''] * len(row)
         if row.get('중복여부', False) and row.get('색상', '') != '':
             bg_color = f"background-color: {row['색상']}; color: black;"
-            
-            # [요구사항 2] 과목/영역, 내용, 복붙 의심 문장에만 색상 적용
             for target_col in ['과목/영역', '내용', '복붙 의심 문장']:
                 if target_col in row.index:
                     styles[row.index.get_loc(target_col)] = bg_color
         return styles
 
-    # UI 및 엑셀 출력 시 불필요한 보조 컬럼은 숨김 처리할 수 있도록 셋업
     display_cols = [c for c in df_to_style.columns if c not in ['중복여부', '색상']]
     return df_to_style.style.apply(row_style, axis=1), display_cols
 
 @st.cache_data
 def to_excel_with_style(df):
-    """엑셀 스타일링 및 저장 (캐싱 적용)"""
     output = io.BytesIO()
     styler, save_cols = style_dataframe(df)
     
@@ -281,7 +269,7 @@ def to_excel_with_style(df):
     return output.getvalue()
 
 # -----------------------------------------------------------------------------
-# 4. 메인 앱 UI
+# 4. 메인 앱 UI (멀티 파일 업로드 및 탭 구조)
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="학생부 점검 도우미", layout="wide")
 
@@ -292,92 +280,102 @@ st.markdown("""
 **기능:**
   1. xlsx_data 파일 다운로드 및 업로드 시 **자동 분류 및 정리**
   2. **복붙 의심 문장 색상 분류 표시** (같은 중복 문장끼리 같은 색상)
+  3. **두 개의 그룹(예: 1반/2반) 분리 업로드 및 탭 비교**
 """)
 
-# 세션 상태(Session State)를 활용해 엑셀 다운로드 시 데이터가 증발하거나 재연산되는 현상 방지
-if 'final_df' not in st.session_state:
-    st.session_state.final_df = None
+# 두 그룹의 결과 저장을 위한 세션 상태 초기화
+if 'final_df_1' not in st.session_state: st.session_state.final_df_1 = None
+if 'final_df_2' not in st.session_state: st.session_state.final_df_2 = None
 
-uploaded_files = st.file_uploader(
-    "처리할 파일들을 모두 올려주세요", 
-    accept_multiple_files=True,
-    type=['xlsx', 'xls', 'csv']
-)
+# 두 개의 업로더를 나란히 배치
+col1, col2 = st.columns(2)
+with col1:
+    st.subheader("📁 그룹 1 파일")
+    uploaded_files_1 = st.file_uploader("그룹 1에 처리할 파일을 올려주세요", accept_multiple_files=True, type=['xlsx', 'xls', 'csv'], key="uploader_1")
+with col2:
+    st.subheader("📁 그룹 2 파일")
+    uploaded_files_2 = st.file_uploader("그룹 2에 처리할 파일을 올려주세요", accept_multiple_files=True, type=['xlsx', 'xls', 'csv'], key="uploader_2")
 
-# 파일이 업로드되었고, 버튼을 누르거나 파일이 변경되었을 때 실행
-if uploaded_files:
-    if st.button("파일 분석 시작", type="primary"):
-        all_results = []
+def process_uploaded_files(files):
+    """여러 파일을 일괄 분석하고 중복 탐지까지 완료하는 통합 함수"""
+    all_results = []
+    for file in files:
+        df_raw = load_data(file)
+        if df_raw is None:
+            continue
+            
+        grade_class = extract_grade_class(df_raw)
+        file_type = detect_file_type(df_raw)
         
+        processed_df = None
+        if file_type == 'HANG':
+            processed_df = process_hang(df_raw, grade_class)
+        elif file_type == 'KYO':
+            processed_df = process_kyo(df_raw, grade_class)
+        elif file_type == 'CHANG':
+            processed_df = process_chang(df_raw, grade_class)
+            
+        if processed_df is not None and not processed_df.empty:
+            all_results.append(processed_df)
+
+    if all_results:
+        final_df = pd.concat(all_results, ignore_index=True)
+        final_df = final_df.sort_values(by=['과목/영역', '번호'])
+        return detect_duplicates(final_df)
+    return None
+
+# 실행 버튼
+if st.button("🚀 전체 파일 분석 시작", type="primary", use_container_width=True):
+    if not uploaded_files_1 and not uploaded_files_2:
+        st.warning("분석할 파일을 하나 이상 업로드해주세요.")
+    else:
         with st.status("파일 분석 및 처리 중...", expanded=True) as status:
-            for file in uploaded_files:
-                df_raw = load_data(file)
-                if df_raw is None:
-                    st.error(f"{file.name}: 읽기 실패")
-                    continue
-                    
-                grade_class = extract_grade_class(df_raw)
-                file_type = detect_file_type(df_raw)
+            if uploaded_files_1:
+                st.write("진행중: 그룹 1 분석...")
+                st.session_state.final_df_1 = process_uploaded_files(uploaded_files_1)
+            
+            if uploaded_files_2:
+                st.write("진행중: 그룹 2 분석...")
+                st.session_state.final_df_2 = process_uploaded_files(uploaded_files_2)
                 
-                processed_df = None
-                type_label = ""
-                
-                if file_type == 'HANG':
-                    processed_df = process_hang(df_raw, grade_class)
-                    type_label = "행동특성"
-                elif file_type == 'KYO':
-                    processed_df = process_kyo(df_raw, grade_class)
-                    type_label = "세부능력"
-                elif file_type == 'CHANG':
-                    processed_df = process_chang(df_raw, grade_class)
-                    type_label = "창의적체험"
-                else:
-                    st.warning(f"⚠️ {file.name}: 알 수 없는 형식 (건너뜀)")
-                    continue
-                    
-                if processed_df is not None and not processed_df.empty:
-                    all_results.append(processed_df)
-                    st.write(f"✅ {file.name} ({type_label} / {grade_class}) - {len(processed_df)}명 처리")
-                else:
-                    st.warning(f"⚠️ {file.name}: 데이터 추출 실패")
-
-            if all_results:
-                final_df = pd.concat(all_results, ignore_index=True)
-                final_df = final_df.sort_values(by=['과목/영역', '번호'])
-                final_df = detect_duplicates(final_df)
-                st.session_state.final_df = final_df # 세션에 저장
-            else:
-                st.session_state.final_df = None
-
             status.update(label="모든 파일 처리 완료!", state="complete", expanded=False)
 
-# 세션에 저장된 결과가 있으면 출력 및 다운로드 버튼 제공
-if st.session_state.final_df is not None:
-    final_df = st.session_state.final_df
-    
+# 결과 표시 영역 (탭 구조)
+if st.session_state.final_df_1 is not None or st.session_state.final_df_2 is not None:
     st.divider()
-    st.subheader("📊 결과 미리보기")
     
-    styler, display_cols = style_dataframe(final_df)
+    # 탭 생성
+    tab1, tab2 = st.tabs(["📊 그룹 1 결과보기", "📊 그룹 2 결과보기"])
     
-    st.dataframe(
-        styler,
-        column_order=display_cols,
-        column_config={
-            "번호": st.column_config.NumberColumn("번호", format="%d"),
-            "시수": st.column_config.TextColumn("시수", width="small"),
-            "복붙 의심 문장": st.column_config.TextColumn("⚠️ 복붙 의심 문장", width="large")
-        },
-        use_container_width=True,
-        hide_index=True
-    )
-    
-    excel_data = to_excel_with_style(final_df)
-    
-    st.download_button(
-        label="📥 통합 엑셀 파일 다운로드 (.xlsx)",
-        data=excel_data,
-        file_name="생기부_통합_정리결과.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary"
-    )
+    # 공통 출력 함수 (DataFrame 및 다운로드 버튼)
+    def render_result_tab(df, group_name):
+        if df is not None:
+            styler, display_cols = style_dataframe(df)
+            st.dataframe(
+                styler,
+                column_order=display_cols,
+                column_config={
+                    "번호": st.column_config.NumberColumn("번호", format="%d"),
+                    "시수": st.column_config.TextColumn("시수", width="small"),
+                    "복붙 의심 문장": st.column_config.TextColumn("⚠️ 복붙 의심 문장", width="large")
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            excel_data = to_excel_with_style(df)
+            st.download_button(
+                label=f"📥 {group_name} 엑셀 파일 다운로드 (.xlsx)",
+                data=excel_data,
+                file_name=f"생기부_{group_name}_정리결과.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"download_btn_{group_name}" # 다운로드 버튼 식별자 충돌 방지
+            )
+        else:
+            st.info(f"{group_name}에 처리할 수 있는 정상적인 데이터가 없거나 업로드되지 않았습니다.")
+
+    with tab1:
+        render_result_tab(st.session_state.final_df_1, "그룹1")
+        
+    with tab2:
+        render_result_tab(st.session_state.final_df_2, "그룹2")
