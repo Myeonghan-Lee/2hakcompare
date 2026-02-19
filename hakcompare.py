@@ -92,7 +92,7 @@ def process_hang(df_raw, grade_class):
     df['번호'] = df['번호'].ffill()
     df = df.dropna(subset=['번호'])
     
-    df_grouped = df.groupby('번호')['내용'].apply(lambda x: ' '.join(x.astype(str))).reset_index()
+    df_grouped = df.groupby('번호')['내용'].apply(lambda x: re.sub(r'\s+', ' ', ' '.join(x.astype(str)).strip())).reset_index()
     
     df_grouped['학년 반'] = grade_class
     df_grouped['학기'] = ''
