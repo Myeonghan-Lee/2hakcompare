@@ -4,11 +4,6 @@ import re
 import io
 
 # -----------------------------------------------------------------------------
-# 0. 페이지 기본 설정
-# -----------------------------------------------------------------------------
-st.set_page_config(page_title="학생부 점검 도우미", layout="wide")
-
-# -----------------------------------------------------------------------------
 # 1. 공통 유틸리티 함수
 # -----------------------------------------------------------------------------
 
@@ -38,18 +33,16 @@ def extract_grade_class(df_raw):
     return "미상"
 
 def detect_file_type(df_raw):
-    """파일 유형 감지 (행특 / 세특 / 창체) - 공백 완벽 제거 적용"""
+    """파일 유형 감지 (행특 / 세특 / 창체)"""
     limit = min(20, len(df_raw))
     text_sample = df_raw.iloc[:limit].astype(str).to_string()
-    # 보이지 않는 공백, 줄바꿈 모두 제거 후 검사
-    clean_sample = re.sub(r'\s+', '', text_sample)
     
-    if "창의적" in clean_sample and ("체험활동" in clean_sample or "자율" in clean_sample or "진로" in clean_sample):
-        return "CHANG"
-    elif "행동특성" in clean_sample or "종합의견" in clean_sample:
-        return "HANG"
-    elif "세부능력" in clean_sample or "특기사항" in clean_sample or "과목" in clean_sample:
-        return "KYO"
+    if "창의적" in text_sample and ("체험활동" in text_sample or "자율" in text_sample):
+        return "CHANG" # 창의적 체험활동
+    elif "행 동 특 성" in text_sample or "행동특성" in text_sample or "종합의견" in text_sample:
+        return "HANG" # 행동특성
+    elif "세부능력" in text_sample or "특기사항" in text_sample or "과 목" in text_sample:
+        return "KYO" # 세부능력(교과)
     else:
         return "UNKNOWN"
 
@@ -61,38 +54,35 @@ def process_hang(df_raw, grade_class):
     """행동특성 처리"""
     header_idx = -1
     for i, row in df_raw.iterrows():
-        # 열의 모든 텍스트를 하나로 합치고 공백 제거하여 검사 (오류 방지)
-        row_str = re.sub(r'\s+', '', ''.join(row.astype(str).values))
-        if '번호' in row_str and '성명' in row_str:
+        row_str = row.astype(str).values
+        if any('번' in s and '호' in s for s in row_str) and any('성' in s and '명' in s for s in row_str):
             header_idx = i
             break
     
     if header_idx == -1: return None
 
     df = df_raw.iloc[header_idx+1:].copy()
-    # 컬럼명의 특수 공백/엔터 모두 제거
-    df.columns = df_raw.iloc[header_idx].astype(str).str.replace(r"\s+", "", regex=True)
+    df.columns = df_raw.iloc[header_idx].astype(str).str.replace(" ", "")
     
     rename_map = {}
     for col in df.columns:
         if '번호' in col: rename_map[col] = '번호'
-        elif '행동특성' in col or '종합의견' in col: rename_map[col] = '내용'
+        elif '행동특성' in col: rename_map[col] = '내용'
+        elif '종합의견' in col: rename_map[col] = '내용'
     df = df.rename(columns=rename_map)
     
+    # 필수 컬럼 확인
     if '번호' not in df.columns or '내용' not in df.columns: return None
         
     df['번호'] = pd.to_numeric(df['번호'], errors='coerce')
     df = df[df['내용'].notna()]
-    
-    # 반복된 헤더 행 제거 (안전한 필터링)
-    clean_content = df['내용'].astype(str).str.replace(r'\s+', '', regex=True)
-    df = df[~clean_content.str.contains('행동특성', na=False)]
-    df = df[~clean_content.str.contains('종합의견', na=False)]
+    df = df[~df['내용'].str.contains('행 동 특 성', na=False)]
+    df = df[~df['내용'].str.contains('종 합 의 견', na=False)]
     
     df['번호'] = df['번호'].ffill()
     df = df.dropna(subset=['번호'])
     
-    df_grouped = df.groupby('번호')['내용'].apply(lambda x: re.sub(r'\s+', ' ', ' '.join(x.astype(str)).strip())).reset_index()
+    df_grouped = df.groupby('번호')['내용'].apply(lambda x: ' '.join(x.astype(str))).reset_index()
     
     df_grouped['학년 반'] = grade_class
     df_grouped['학기'] = ''
@@ -105,38 +95,37 @@ def process_kyo(df_raw, grade_class):
     """세부능력(교과) 처리"""
     header_idx = -1
     for i, row in df_raw.iterrows():
-        row_str = re.sub(r'\s+', '', ''.join(row.astype(str).values))
-        if '과목' in row_str and '세부능력' in row_str:
+        row_str = row.astype(str).values
+        if any('과' in s and '목' in s for s in row_str) and any('세부능력' in s for s in row_str):
             header_idx = i
             break
             
     if header_idx == -1: return None
         
     df = df_raw.iloc[header_idx+1:].copy()
-    df.columns = df_raw.iloc[header_idx].astype(str).str.replace(r"\s+", "", regex=True)
+    df.columns = df_raw.iloc[header_idx].astype(str).str.replace(" ", "")
     
     rename_map = {}
     for col in df.columns:
         if '과목' in col: rename_map[col] = '과목/영역'
         elif '학기' in col: rename_map[col] = '학기'
         elif '번호' in col: rename_map[col] = '번호'
-        elif '세부능력' in col or '특기사항' in col: rename_map[col] = '내용'
+        elif '세부능력' in col: rename_map[col] = '내용'
+        elif '특기사항' in col: rename_map[col] = '내용'
     df = df.rename(columns=rename_map)
     
     if '내용' not in df.columns or '과목/영역' not in df.columns: return None
 
     df['번호'] = pd.to_numeric(df['번호'], errors='coerce')
-    
-    clean_subject = df['과목/영역'].astype(str).str.replace(r'\s+', '', regex=True)
-    df = df[clean_subject != '과목']
-    
+    df = df[df['과목/영역'] != '과 목']
+    df = df[df['과목/영역'] != '과목']
     df['번호'] = df['번호'].ffill()
     df['과목/영역'] = df['과목/영역'].ffill()
     df['학기'] = df['학기'].ffill()
     
     df = df.dropna(subset=['번호', '내용'])
     
-    df_grouped = df.groupby('번호')['내용'].apply(lambda x: re.sub(r'\s+', ' ', ' '.join(x.astype(str)).strip())).reset_index()
+    df_grouped = df.groupby(['번호', '학기', '과목/영역'])['내용'].apply(lambda x: ' '.join(x.astype(str))).reset_index()
     
     df_grouped['학년 반'] = grade_class
     df_grouped['시수'] = '' 
@@ -144,30 +133,37 @@ def process_kyo(df_raw, grade_class):
     return df_grouped[['학년 반', '번호', '학기', '과목/영역', '시수', '내용']]
 
 def process_chang(df_raw, grade_class):
-    """창의적 체험활동(자율/진로) 처리"""
+    """창의적 체험활동(자율/진로) 처리 - 수정됨"""
     header_idx = -1
     for i, row in df_raw.iterrows():
-        row_str = re.sub(r'\s+', '', ''.join(row.astype(str).values))
-        if '영역' in row_str and '시간' in row_str:
+        row_str = row.astype(str).values
+        if any('영' in s and '역' in s for s in row_str) and any('시' in s and '간' in s for s in row_str):
             header_idx = i
             break
             
     if header_idx == -1: return None
     
+    # [수정] 2단 헤더 병합 로직 (번호/성명이 위쪽 행에 있는 경우 대응)
+    # 현재 헤더(영역, 시간 등) 가져오기
     cols = df_raw.iloc[header_idx].fillna('').astype(str).values.tolist()
     
+    # 바로 위 행(번호, 성명 등) 가져와서 빈칸 채우기
     if header_idx > 0:
         upper_row = df_raw.iloc[header_idx - 1].fillna('').astype(str).values.tolist()
         for i in range(len(cols)):
+            # 현재 컬럼명이 비어있거나 nan이면 위쪽 행의 값을 가져옴
             if cols[i].strip() == '' or cols[i].lower() == 'nan':
                 if i < len(upper_row) and upper_row[i].strip() != '' and upper_row[i].lower() != 'nan':
                     cols[i] = upper_row[i]
     
-    cols = [re.sub(r"\s+", "", c) for c in cols]
+    # 공백 제거
+    cols = [c.replace(" ", "") for c in cols]
     
+    # 데이터 프레임 생성
     df = df_raw.iloc[header_idx+1:].copy()
     df.columns = cols
     
+    # 컬럼 매핑
     rename_map = {}
     for col in df.columns:
         if '번호' in col: rename_map[col] = '번호'
@@ -177,24 +173,30 @@ def process_chang(df_raw, grade_class):
     
     df = df.rename(columns=rename_map)
     
+    # [수정] 필수 컬럼 체크에 '번호' 추가
     if '번호' not in df.columns or '내용' not in df.columns or '과목/영역' not in df.columns:
         return None
 
+    # 데이터 정제
     df['번호'] = pd.to_numeric(df['번호'], errors='coerce')
     
-    clean_subject = df['과목/영역'].astype(str).str.replace(r'\s+', '', regex=True)
-    df = df[clean_subject != '영역']
+    df = df[df['과목/영역'] != '영 역']
+    df = df[df['과목/영역'] != '영역']
     
     df['번호'] = df['번호'].ffill()
     df['과목/영역'] = df['과목/영역'].ffill()
     df['시수'] = df['시수'].ffill()
+    
     df = df.dropna(subset=['번호'])
     
-    clean_content = df['내용'].astype(str).str.replace(r'\s+', '', regex=True)
-    df = df[clean_content != '희망분야']
+    # 진로활동 '희망분야' 행 제거
+    df = df[df['내용'].astype(str) != '희망분야']
+    df = df[~df['내용'].astype(str).str.contains('희망분야', na=False)]
+    
     df = df.dropna(subset=['내용'])
 
-    df_grouped = df.groupby('번호')['내용'].apply(lambda x: re.sub(r'\s+', ' ', ' '.join(x.astype(str)).strip())).reset_index()
+    # 내용 병합
+    df_grouped = df.groupby(['번호', '과목/영역', '시수'])['내용'].apply(lambda x: ' '.join(x.astype(str))).reset_index()
     
     df_grouped['학년 반'] = grade_class
     df_grouped['학기'] = '' 
@@ -202,20 +204,12 @@ def process_chang(df_raw, grade_class):
     return df_grouped[['학년 반', '번호', '학기', '과목/영역', '시수', '내용']]
 
 def detect_duplicates(df):
-    """단일 파일 내 복붙(중복) 문장 탐지"""
+    """복붙(중복) 문장 탐지"""
     sentence_pattern = re.compile(r'[^.!?]+[.!?]')
     df['중복여부'] = False
     df['비고(중복문장)'] = ''
-    df['중복배경색'] = '' 
-    df['중복글자색'] = ''
     
-    color_pairs = [
-        ('#ffe6e6', '#cc0000'), ('#e6f2ff', '#004080'), ('#e6ffe6', '#006600'),
-        ('#fff2e6', '#cc6600'), ('#f2e6ff', '#4d0099'), ('#ffffe6', '#808000'),
-        ('#e6ffff', '#006666'), ('#ffe6f2', '#99004d'), ('#f2ffe6', '#4d9900'),
-        ('#ebebe0', '#333333')
-    ]
-    
+    # 과목/영역이 비어있는 경우(NaN) 처리
     df['과목/영역'] = df['과목/영역'].fillna('기타')
     
     for subject, group in df.groupby('과목/영역'):
@@ -231,10 +225,6 @@ def detect_duplicates(df):
         
         duplicate_sentences = {s for s, count in sentence_counts.items() if count > 1}
         
-        color_map = {}
-        for i, dup_sent in enumerate(duplicate_sentences):
-            color_map[dup_sent] = color_pairs[i % len(color_pairs)]
-            
         for idx, row in group.iterrows():
             content = str(row['내용'])
             sentences = [s.strip() for s in sentence_pattern.findall(content)]
@@ -244,112 +234,42 @@ def detect_duplicates(df):
                 df.at[idx, '중복여부'] = True
                 unique_dupes = list(set(found_duplicates))
                 df.at[idx, '비고(중복문장)'] = " / ".join(unique_dupes)
-                
-                bg_color, text_color = color_map[unique_dupes[0]]
-                df.at[idx, '중복배경색'] = bg_color
-                df.at[idx, '중복글자색'] = text_color
 
     return df
 
-def cross_validate_files(df1, df2, name1, name2):
-    """두 파일 간의 교차 점검 (동일 과목 내 중복 문장 탐색)"""
-    sentence_pattern = re.compile(r'[^.!?]+[.!?]')
-    cross_results = []
-    
-    subjects1 = set(df1['과목/영역'].dropna().unique())
-    subjects2 = set(df2['과목/영역'].dropna().unique())
-    common_subjects = subjects1.intersection(subjects2)
-    
-    for subj in common_subjects:
-        group1 = df1[df1['과목/영역'] == subj]
-        group2 = df2[df2['과목/영역'] == subj]
-        
-        sent_map1 = {}
-        for _, row in group1.iterrows():
-            content = str(row['내용'])
-            student_info = f"{row['학년 반']} {row['번호']}번"
-            for s in [s.strip() for s in sentence_pattern.findall(content)]:
-                if len(s) < 10: continue
-                if s not in sent_map1: sent_map1[s] = []
-                sent_map1[s].append(student_info)
-                
-        sent_map2 = {}
-        for _, row in group2.iterrows():
-            content = str(row['내용'])
-            student_info = f"{row['학년 반']} {row['번호']}번"
-            for s in [s.strip() for s in sentence_pattern.findall(content)]:
-                if len(s) < 10: continue
-                if s not in sent_map2: sent_map2[s] = []
-                sent_map2[s].append(student_info)
-                
-        common_sentences = set(sent_map1.keys()).intersection(set(sent_map2.keys()))
-        
-        for s in common_sentences:
-            students1 = ", ".join(list(set(sent_map1[s])))
-            students2 = ", ".join(list(set(sent_map2[s])))
-            cross_results.append({
-                '과목/영역': subj,
-                '동일 문장': s,
-                f'첫번째 파일({name1}) 학생반 번호': students1,
-                f'두번째 파일({name2}) 학생반 번호': students2
-            })
-            
-    if cross_results:
-        return pd.DataFrame(cross_results).sort_values(by=['과목/영역'])
-    else:
-        return pd.DataFrame(columns=['과목/영역', '동일 문장', f'첫번째 파일({name1}) 학생반 번호', f'두번째 파일({name2}) 학생반 번호'])
-
-def to_excel_multiple_sheets(df_dict, cross_df=None):
-    """여러 데이터프레임과 교차점검 결과를 엑셀에 저장"""
+def to_excel_with_style(df):
+    """엑셀 스타일링 및 저장"""
     output = io.BytesIO()
+    save_cols = [c for c in df.columns if c != '중복여부']
+    
+    def style_duplicate(row):
+        styles = [''] * len(row)
+        if row.get('중복여부', False):
+            try:
+                content_idx = row.index.get_loc('내용')
+                styles[content_idx] = 'color: red; font-weight: bold;'
+            except: pass
+            try:
+                note_idx = row.index.get_loc('비고(중복문장)')
+                styles[note_idx] = 'color: red;'
+            except: pass
+        return styles
+
+    styler = df.style.apply(style_duplicate, axis=1)
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        for file_name, df in df_dict.items():
-            safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '', file_name)[:31]
-            save_cols = [c for c in df.columns if c not in ['중복여부', '중복배경색', '중복글자색']]
+        styler.to_excel(writer, index=False, columns=save_cols, sheet_name='정리결과')
+        worksheet = writer.sheets['정리결과']
+        for idx, col in enumerate(save_cols):
+            width = 50 if '내용' in col or '비고' in col else 12
+            worksheet.column_dimensions[chr(65 + idx)].width = width
             
-            def style_duplicate_excel(row):
-                styles = [''] * len(row)
-                if row.get('중복여부', False) and row.get('중복배경색', ''):
-                    bg_color = row['중복배경색']
-                    txt_color = row['중복글자색']
-                    
-                    for col in ['과목/영역', '번호', '내용']:
-                        if col in row.index:
-                            try:
-                                idx = row.index.get_loc(col)
-                                styles[idx] = f'background-color: {bg_color}; color: {txt_color}; font-weight: bold;'
-                            except KeyError: pass
-                    
-                    if '비고(중복문장)' in row.index:
-                        try:
-                            note_idx = row.index.get_loc('비고(중복문장)')
-                            styles[note_idx] = 'color: red;'
-                        except KeyError: pass
-                return styles
-
-            styler = df.style.apply(style_duplicate_excel, axis=1)
-            styler.to_excel(writer, index=False, columns=save_cols, sheet_name=safe_sheet_name)
-            
-            worksheet = writer.sheets[safe_sheet_name]
-            for idx, col in enumerate(save_cols):
-                width = 50 if '내용' in col or '비고' in col else 12
-                worksheet.column_dimensions[chr(65 + idx)].width = width
-                
-        if cross_df is not None and not cross_df.empty:
-            cross_sheet_name = "교차점검결과"
-            cross_df.to_excel(writer, index=False, sheet_name=cross_sheet_name)
-            worksheet = writer.sheets[cross_sheet_name]
-            worksheet.column_dimensions['A'].width = 15 
-            worksheet.column_dimensions['B'].width = 60 
-            worksheet.column_dimensions['C'].width = 20 
-            worksheet.column_dimensions['D'].width = 20 
-
     return output.getvalue()
 
 # -----------------------------------------------------------------------------
 # 3. 메인 앱 UI
 # -----------------------------------------------------------------------------
+st.set_page_config(page_title="학생부 점검 도우미", layout="wide")
 
 st.title("🏫 학생부 점검 도우미")
 st.markdown("""
@@ -357,9 +277,7 @@ st.markdown("""
 
 **기능:**
   1. xlsx_data 파일 다운로드 및 업로드 시 **자동 분류 및 정리**
-  2. **복붙 의심 문장 그룹별 배경색/글자색 다르게 표시 (과목, 번호, 내용 강조)**
-  3. **여러 파일 업로드 시 탭(Tab)으로 구분하여 표시**
-  4. **두 개 이상의 파일 업로드 시 파일 간 복붙(교차 점검) 자동 탐지** 🚀
+  2. **복붙 의심 문장 빨간색 표시**
 """)
 
 uploaded_files = st.file_uploader(
@@ -369,12 +287,13 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    processed_data_dict = {}
+    all_results = []
     
     with st.status("파일 분석 및 처리 중...", expanded=True) as status:
         for file in uploaded_files:
             df_raw = load_data(file)
             if df_raw is None:
+                st.error(f"{file.name}: 읽기 실패")
                 continue
                 
             grade_class = extract_grade_class(df_raw)
@@ -397,87 +316,40 @@ if uploaded_files:
                 continue
                 
             if processed_df is not None and not processed_df.empty:
-                processed_df = processed_df.sort_values(by=['과목/영역', '번호'])
-                processed_df = detect_duplicates(processed_df)
-                processed_df['번호'] = pd.to_numeric(processed_df['번호']).astype(int)
-                
-                ordered_cols = ['학년 반', '학기', '과목/영역', '번호', '시수', '내용', '비고(중복문장)', '중복여부', '중복배경색', '중복글자색']
-                processed_df = processed_df[ordered_cols]
-                
-                processed_data_dict[file.name] = processed_df
+                all_results.append(processed_df)
                 st.write(f"✅ {file.name} ({type_label} / {grade_class}) - {len(processed_df)}명 처리")
             else:
-                st.warning(f"⚠️ {file.name}: 데이터 추출 실패 (형식이 맞지 않습니다.)")
+                st.warning(f"⚠️ {file.name}: 데이터 추출 실패")
 
         status.update(label="모든 파일 처리 완료!", state="complete", expanded=False)
 
-    if processed_data_dict:
+    if all_results:
+        final_df = pd.concat(all_results, ignore_index=True)
+        final_df = final_df.sort_values(by=['과목/영역', '번호'])
+        final_df = detect_duplicates(final_df)
+        
         st.divider()
         st.subheader("📊 결과 미리보기")
         
-        cross_df = None
-        file_names = list(processed_data_dict.keys())
-        
-        if len(file_names) >= 2:
-            name1, name2 = file_names[0], file_names[1]
-            df1, df2 = processed_data_dict[name1], processed_data_dict[name2]
-            cross_df = cross_validate_files(df1, df2, name1, name2)
+        def highlight_row(row):
+            return ['background-color: #ffe6e6' if row['중복여부'] else '' for _ in row]
             
-        tab_names = file_names.copy()
-        if cross_df is not None:
-            tab_names.append("🚨 교차 점검 결과")
-            
-        tabs = st.tabs(tab_names)
+        st.dataframe(
+            final_df.style.apply(highlight_row, axis=1),
+            column_config={
+                "시수": st.column_config.TextColumn("시수", width="small"),
+                "비고(중복문장)": st.column_config.TextColumn("⚠️ 복붙 의심 문장", width="medium"),
+                "중복여부": None
+            },
+            use_container_width=True
+        )
         
-        def highlight_row_web(row):
-            styles = [''] * len(row)
-            if row.get('중복여부', False) and row.get('중복배경색', ''):
-                bg_color = row['중복배경색']
-                txt_color = row['중복글자색']
-                for col in ['과목/영역', '번호', '내용']:
-                    if col in row.index:
-                        try:
-                            idx = row.index.get_loc(col)
-                            styles[idx] = f'background-color: {bg_color}; color: {txt_color}; font-weight: bold;'
-                        except KeyError: pass
-            return styles
-        
-        for i, tab in enumerate(tabs):
-            with tab:
-                if i < len(file_names):
-                    file_name = file_names[i]
-                    df_to_show = processed_data_dict[file_name]
-                    st.dataframe(
-                        df_to_show.style.apply(highlight_row_web, axis=1),
-                        column_config={
-                            "시수": st.column_config.TextColumn("시수", width="small"),
-                            "비고(중복문장)": st.column_config.TextColumn("⚠️ 복붙 의심 문장", width="medium"),
-                            "중복여부": None, "중복배경색": None, "중복글자색": None
-                        },
-                        use_container_width=True
-                    )
-                else:
-                    if cross_df is not None and not cross_df.empty:
-                        st.warning(f"⚠️ {name1} 과(와) {name2} 사이에 내용이 중복된 문장들입니다.")
-                        st.dataframe(
-                            cross_df,
-                            column_config={
-                                "동일 문장": st.column_config.TextColumn("동일 문장", width="large"),
-                                f"첫번째 파일({name1}) 학생반 번호": st.column_config.TextColumn(f"{name1} 학생", width="medium"),
-                                f"두번째 파일({name2}) 학생반 번호": st.column_config.TextColumn(f"{name2} 학생", width="medium")
-                            },
-                            use_container_width=True
-                        )
-                    else:
-                        st.success("🎉 두 파일 사이에 교차 중복된 문장이 없습니다!")
-        
-        st.divider()
-        excel_data = to_excel_multiple_sheets(processed_data_dict, cross_df=cross_df)
+        excel_data = to_excel_with_style(final_df)
         
         st.download_button(
-            label="📥 통합 엑셀 다운로드 (개별시트 + 교차점검시트 포함)",
+            label="📥 통합 엑셀 파일 다운로드 (.xlsx)",
             data=excel_data,
-            file_name="생기부_정리결과_전체.xlsx",
+            file_name="생기부_통합_정리결과.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
