@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 import io
+import itertools
 
 # -----------------------------------------------------------------------------
 # 0. 페이지 기본 설정
@@ -43,11 +44,11 @@ def detect_file_type(df_raw):
     text_sample = df_raw.iloc[:limit].astype(str).to_string()
     
     if "창의적" in text_sample and ("체험활동" in text_sample or "자율" in text_sample):
-        return "CHANG" # 창의적 체험활동
+        return "CHANG"
     elif "행 동 특 성" in text_sample or "행동특성" in text_sample or "종합의견" in text_sample:
-        return "HANG" # 행동특성
+        return "HANG"
     elif "세부능력" in text_sample or "특기사항" in text_sample or "과 목" in text_sample:
-        return "KYO" # 세부능력(교과)
+        return "KYO"
     else:
         return "UNKNOWN"
 
@@ -56,7 +57,6 @@ def detect_file_type(df_raw):
 # -----------------------------------------------------------------------------
 
 def process_hang(df_raw, grade_class):
-    """행동특성 처리"""
     header_idx = -1
     for i, row in df_raw.iterrows():
         row_str = row.astype(str).values
@@ -96,7 +96,6 @@ def process_hang(df_raw, grade_class):
     return df_grouped[['학년 반', '번호', '학기', '과목/영역', '시수', '내용']]
 
 def process_kyo(df_raw, grade_class):
-    """세부능력(교과) 처리"""
     header_idx = -1
     for i, row in df_raw.iterrows():
         row_str = row.astype(str).values
@@ -137,7 +136,6 @@ def process_kyo(df_raw, grade_class):
     return df_grouped[['학년 반', '번호', '학기', '과목/영역', '시수', '내용']]
 
 def process_chang(df_raw, grade_class):
-    """창의적 체험활동(자율/진로) 처리"""
     header_idx = -1
     for i, row in df_raw.iterrows():
         row_str = row.astype(str).values
@@ -194,25 +192,18 @@ def process_chang(df_raw, grade_class):
     return df_grouped[['학년 반', '번호', '학기', '과목/영역', '시수', '내용']]
 
 def detect_duplicates(df):
-    """복붙(중복) 문장 탐지 및 그룹별 배경/글자색 할당"""
+    """단일 파일 내 복붙(중복) 문장 탐지"""
     sentence_pattern = re.compile(r'[^.!?]+[.!?]')
     df['중복여부'] = False
     df['비고(중복문장)'] = ''
     df['중복배경색'] = '' 
     df['중복글자색'] = ''
     
-    # 🎨 (배경색, 글자색) 쌍 구성 - 가독성을 위해 파스텔 배경 + 어두운 텍스트 조합
     color_pairs = [
-        ('#ffe6e6', '#cc0000'), # 연한 빨강 배경 / 진한 빨강 글씨
-        ('#e6f2ff', '#004080'), # 연한 파랑 배경 / 진한 파랑 글씨
-        ('#e6ffe6', '#006600'), # 연한 초록 배경 / 진한 초록 글씨
-        ('#fff2e6', '#cc6600'), # 연한 주황 배경 / 진한 주황 글씨
-        ('#f2e6ff', '#4d0099'), # 연한 보라 배경 / 진한 보라 글씨
-        ('#ffffe6', '#808000'), # 연한 노랑 배경 / 진한 올리브 글씨
-        ('#e6ffff', '#006666'), # 연한 청록 배경 / 진한 청록 글씨
-        ('#ffe6f2', '#99004d'), # 연한 분홍 배경 / 진한 자주 글씨
-        ('#f2ffe6', '#4d9900'), # 연한 연두 배경 / 진한 연두 글씨
-        ('#ebebe0', '#333333'), # 연한 회색 배경 / 진한 회색 글씨
+        ('#ffe6e6', '#cc0000'), ('#e6f2ff', '#004080'), ('#e6ffe6', '#006600'),
+        ('#fff2e6', '#cc6600'), ('#f2e6ff', '#4d0099'), ('#ffffe6', '#808000'),
+        ('#e6ffff', '#006666'), ('#ffe6f2', '#99004d'), ('#f2ffe6', '#4d9900'),
+        ('#ebebe0', '#333333')
     ]
     
     df['과목/영역'] = df['과목/영역'].fillna('기타')
@@ -250,8 +241,62 @@ def detect_duplicates(df):
 
     return df
 
-def to_excel_multiple_sheets(df_dict):
-    """여러 데이터프레임을 탭(시트)별로 엑셀에 저장"""
+def cross_validate_files(df1, df2, name1, name2):
+    """두 파일 간의 교차 점검 (동일 과목 내 중복 문장 탐색)"""
+    sentence_pattern = re.compile(r'[^.!?]+[.!?]')
+    cross_results = []
+    
+    # 두 파일에 공통으로 존재하는 과목/영역 찾기
+    subjects1 = set(df1['과목/영역'].dropna().unique())
+    subjects2 = set(df2['과목/영역'].dropna().unique())
+    common_subjects = subjects1.intersection(subjects2)
+    
+    for subj in common_subjects:
+        group1 = df1[df1['과목/영역'] == subj]
+        group2 = df2[df2['과목/영역'] == subj]
+        
+        # 파일 1의 문장들 수집 (문장 -> 학생정보 리스트)
+        sent_map1 = {}
+        for _, row in group1.iterrows():
+            content = str(row['내용'])
+            student_info = f"{row['학년 반']} {row['번호']}번"
+            for s in [s.strip() for s in sentence_pattern.findall(content)]:
+                if len(s) < 10: continue # 10자 미만 무시
+                if s not in sent_map1: sent_map1[s] = []
+                sent_map1[s].append(student_info)
+                
+        # 파일 2의 문장들 수집
+        sent_map2 = {}
+        for _, row in group2.iterrows():
+            content = str(row['내용'])
+            student_info = f"{row['학년 반']} {row['번호']}번"
+            for s in [s.strip() for s in sentence_pattern.findall(content)]:
+                if len(s) < 10: continue
+                if s not in sent_map2: sent_map2[s] = []
+                sent_map2[s].append(student_info)
+                
+        # 교차 중복된 문장 찾기 (교집합)
+        common_sentences = set(sent_map1.keys()).intersection(set(sent_map2.keys()))
+        
+        # 결과 리스트에 추가 (과목 내에서 동일 문장이 여러 개면 행 추가)
+        for s in common_sentences:
+            students1 = ", ".join(list(set(sent_map1[s])))
+            students2 = ", ".join(list(set(sent_map2[s])))
+            cross_results.append({
+                '과목/영역': subj,
+                '동일 문장': s,
+                f'첫번째 파일({name1}) 학생반 번호': students1,
+                f'두번째 파일({name2}) 학생반 번호': students2
+            })
+            
+    if cross_results:
+        return pd.DataFrame(cross_results).sort_values(by=['과목/영역'])
+    else:
+        # 중복이 없을 경우 빈 데이터프레임 반환
+        return pd.DataFrame(columns=['과목/영역', '동일 문장', f'첫번째 파일({name1}) 학생반 번호', f'두번째 파일({name2}) 학생반 번호'])
+
+def to_excel_multiple_sheets(df_dict, cross_df=None):
+    """여러 데이터프레임과 교차점검 결과를 엑셀에 저장"""
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -269,7 +314,6 @@ def to_excel_multiple_sheets(df_dict):
                         if col in row.index:
                             try:
                                 idx = row.index.get_loc(col)
-                                # 엑셀에서도 배경색과 글자색(굵게) 동시 적용
                                 styles[idx] = f'background-color: {bg_color}; color: {txt_color}; font-weight: bold;'
                             except KeyError: pass
                     
@@ -288,6 +332,17 @@ def to_excel_multiple_sheets(df_dict):
                 width = 50 if '내용' in col or '비고' in col else 12
                 worksheet.column_dimensions[chr(65 + idx)].width = width
                 
+        # 교차 점검 결과 시트 추가
+        if cross_df is not None and not cross_df.empty:
+            cross_sheet_name = "교차점검결과"
+            cross_df.to_excel(writer, index=False, sheet_name=cross_sheet_name)
+            worksheet = writer.sheets[cross_sheet_name]
+            # 열 너비 조정
+            worksheet.column_dimensions['A'].width = 15 # 과목/영역
+            worksheet.column_dimensions['B'].width = 60 # 동일 문장
+            worksheet.column_dimensions['C'].width = 20 # 첫번째 파일 학생
+            worksheet.column_dimensions['D'].width = 20 # 두번째 파일 학생
+
     return output.getvalue()
 
 # -----------------------------------------------------------------------------
@@ -302,6 +357,7 @@ st.markdown("""
   1. xlsx_data 파일 다운로드 및 업로드 시 **자동 분류 및 정리**
   2. **복붙 의심 문장 그룹별 배경색/글자색 다르게 표시 (과목, 번호, 내용 강조)**
   3. **여러 파일 업로드 시 탭(Tab)으로 구분하여 표시**
+  4. **두 개 이상의 파일 업로드 시 파일 간 복붙(교차 점검) 자동 탐지** 🚀
 """)
 
 uploaded_files = st.file_uploader(
@@ -317,7 +373,6 @@ if uploaded_files:
         for file in uploaded_files:
             df_raw = load_data(file)
             if df_raw is None:
-                st.error(f"{file.name}: 읽기 실패")
                 continue
                 
             grade_class = extract_grade_class(df_raw)
@@ -349,8 +404,6 @@ if uploaded_files:
                 
                 processed_data_dict[file.name] = processed_df
                 st.write(f"✅ {file.name} ({type_label} / {grade_class}) - {len(processed_df)}명 처리")
-            else:
-                st.warning(f"⚠️ {file.name}: 데이터 추출 실패")
 
         status.update(label="모든 파일 처리 완료!", state="complete", expanded=False)
 
@@ -358,7 +411,22 @@ if uploaded_files:
         st.divider()
         st.subheader("📊 결과 미리보기")
         
-        # 🎨 웹 화면 스타일링 함수
+        # 교차 점검 로직 실행 (파일이 2개 이상일 때, 처음 두 파일 기준)
+        cross_df = None
+        file_names = list(processed_data_dict.keys())
+        
+        if len(file_names) >= 2:
+            name1, name2 = file_names[0], file_names[1]
+            df1, df2 = processed_data_dict[name1], processed_data_dict[name2]
+            cross_df = cross_validate_files(df1, df2, name1, name2)
+            
+        # 탭 구성 (파일별 탭 + 교차점검 탭)
+        tab_names = file_names.copy()
+        if cross_df is not None:
+            tab_names.append("🚨 교차 점검 결과")
+            
+        tabs = st.tabs(tab_names)
+        
         def highlight_row_web(row):
             styles = [''] * len(row)
             if row.get('중복여부', False) and row.get('중복배경색', ''):
@@ -368,34 +436,47 @@ if uploaded_files:
                     if col in row.index:
                         try:
                             idx = row.index.get_loc(col)
-                            # 웹 화면에서도 배경색과 글자색(굵게) 동시 적용
                             styles[idx] = f'background-color: {bg_color}; color: {txt_color}; font-weight: bold;'
                         except KeyError: pass
             return styles
         
-        tab_names = list(processed_data_dict.keys())
-        tabs = st.tabs(tab_names)
-        
-        for tab, file_name in zip(tabs, tab_names):
+        # 탭 콘텐츠 채우기
+        for i, tab in enumerate(tabs):
             with tab:
-                df_to_show = processed_data_dict[file_name]
-                st.dataframe(
-                    df_to_show.style.apply(highlight_row_web, axis=1),
-                    column_config={
-                        "시수": st.column_config.TextColumn("시수", width="small"),
-                        "비고(중복문장)": st.column_config.TextColumn("⚠️ 복붙 의심 문장", width="medium"),
-                        "중복여부": None,
-                        "중복배경색": None,
-                        "중복글자색": None
-                    },
-                    use_container_width=True
-                )
+                if i < len(file_names):
+                    # 개별 파일 탭
+                    file_name = file_names[i]
+                    df_to_show = processed_data_dict[file_name]
+                    st.dataframe(
+                        df_to_show.style.apply(highlight_row_web, axis=1),
+                        column_config={
+                            "시수": st.column_config.TextColumn("시수", width="small"),
+                            "비고(중복문장)": st.column_config.TextColumn("⚠️ 복붙 의심 문장", width="medium"),
+                            "중복여부": None, "중복배경색": None, "중복글자색": None
+                        },
+                        use_container_width=True
+                    )
+                else:
+                    # 교차 점검 결과 탭
+                    if cross_df is not None and not cross_df.empty:
+                        st.warning(f"⚠️ {name1} 과(와) {name2} 사이에 내용이 중복된 문장들입니다.")
+                        st.dataframe(
+                            cross_df,
+                            column_config={
+                                "동일 문장": st.column_config.TextColumn("동일 문장", width="large"),
+                                f"첫번째 파일({name1}) 학생반 번호": st.column_config.TextColumn(f"{name1} 학생", width="medium"),
+                                f"두번째 파일({name2}) 학생반 번호": st.column_config.TextColumn(f"{name2} 학생", width="medium")
+                            },
+                            use_container_width=True
+                        )
+                    else:
+                        st.success("🎉 두 파일 사이에 교차 중복된 문장이 없습니다!")
         
         st.divider()
-        excel_data = to_excel_multiple_sheets(processed_data_dict)
+        excel_data = to_excel_multiple_sheets(processed_data_dict, cross_df=cross_df)
         
         st.download_button(
-            label="📥 전체 탭 통합 엑셀 다운로드 (시트별 분리)",
+            label="📥 통합 엑셀 다운로드 (개별시트 + 교차점검시트 포함)",
             data=excel_data,
             file_name="생기부_정리결과_전체.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
