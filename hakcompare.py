@@ -136,7 +136,7 @@ def process_kyo(df_raw, grade_class):
     
     df = df.dropna(subset=['번호', '내용'])
     
-    df_grouped = df.groupby(['번호', '학기', '과목/영역'])['내용'].apply(lambda x: ' '.join(x.astype(str))).reset_index()
+    df_grouped = df.groupby('번호')['내용'].apply(lambda x: re.sub(r'\s+', ' ', ' '.join(x.astype(str)).strip())).reset_index()
     
     df_grouped['학년 반'] = grade_class
     df_grouped['시수'] = '' 
@@ -194,7 +194,7 @@ def process_chang(df_raw, grade_class):
     df = df[clean_content != '희망분야']
     df = df.dropna(subset=['내용'])
 
-    df_grouped = df.groupby(['번호', '과목/영역', '시수'])['내용'].apply(lambda x: ' '.join(x.astype(str))).reset_index()
+    df_grouped = df.groupby('번호')['내용'].apply(lambda x: re.sub(r'\s+', ' ', ' '.join(x.astype(str)).strip())).reset_index()
     
     df_grouped['학년 반'] = grade_class
     df_grouped['학기'] = '' 
