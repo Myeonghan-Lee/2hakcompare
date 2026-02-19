@@ -272,24 +272,20 @@ def run_cross_validation(df1, df2):
     
     cross_results = []
     
-    # 두 그룹에 공통으로 존재하는 (유형, 과목/영역) 쌍을 탐색
     for subj in set(map1.keys()).intersection(set(map2.keys())):
         type_val, subject = subj
         sentences1 = map1[subj]
         sentences2 = map2[subj]
         
-        # 두 그룹 모두에서 사용된 동일한 문장 탐색
         common_sentences = set(sentences1.keys()).intersection(set(sentences2.keys()))
         
         for s in common_sentences:
-            # 그룹 1 사용자 서식화 (예: [1학년 1반] 3번, 5번)
             g1_usage = []
             for gc, nums in sentences1[s].items():
                 nums_str = ", ".join([f"{n}번" for n in sorted(nums)])
                 g1_usage.append(f"[{gc}] {nums_str}")
             g1_str = " \n ".join(g1_usage)
             
-            # 그룹 2 사용자 서식화
             g2_usage = []
             for gc, nums in sentences2[s].items():
                 nums_str = ", ".join([f"{n}번" for n in sorted(nums)])
@@ -317,7 +313,6 @@ def style_dataframe(df_to_style):
                     styles[row.index.get_loc(target_col)] = bg_color
         return styles
 
-    # 화면 표시 및 엑셀 다운로드 시 시스템용 숨김 컬럼 제외
     display_cols = [c for c in df_to_style.columns if c not in ['중복여부', '색상', '유형']]
     return df_to_style.style.apply(row_style, axis=1), display_cols
 
@@ -354,13 +349,36 @@ st.markdown("""
 if 'final_df_1' not in st.session_state: st.session_state.final_df_1 = None
 if 'final_df_2' not in st.session_state: st.session_state.final_df_2 = None
 
+# -----------------------------------------------------------------------------
+# 파일 변경 시 호출될 콜백 함수 추가
+# -----------------------------------------------------------------------------
+def reset_group1():
+    """그룹 1 파일 업로더에 변경(추가/삭제)이 발생하면 그룹1 결과 초기화"""
+    st.session_state.final_df_1 = None
+
+def reset_group2():
+    """그룹 2 파일 업로더에 변경(추가/삭제)이 발생하면 그룹2 결과 초기화"""
+    st.session_state.final_df_2 = None
+
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("📁 그룹 1 파일")
-    uploaded_files_1 = st.file_uploader("그룹 1에 처리할 파일을 올려주세요", accept_multiple_files=True, type=['xlsx', 'xls', 'csv'], key="uploader_1")
+    uploaded_files_1 = st.file_uploader(
+        "그룹 1에 처리할 파일을 올려주세요", 
+        accept_multiple_files=True, 
+        type=['xlsx', 'xls', 'csv'], 
+        key="uploader_1",
+        on_change=reset_group1  # 상태 변경 시 초기화 콜백
+    )
 with col2:
     st.subheader("📁 그룹 2 파일")
-    uploaded_files_2 = st.file_uploader("그룹 2에 처리할 파일을 올려주세요", accept_multiple_files=True, type=['xlsx', 'xls', 'csv'], key="uploader_2")
+    uploaded_files_2 = st.file_uploader(
+        "그룹 2에 처리할 파일을 올려주세요", 
+        accept_multiple_files=True, 
+        type=['xlsx', 'xls', 'csv'], 
+        key="uploader_2",
+        on_change=reset_group2  # 상태 변경 시 초기화 콜백
+    )
 
 def process_uploaded_files(files):
     all_results = []
@@ -381,7 +399,7 @@ def process_uploaded_files(files):
             processed_df = process_chang(df_raw, grade_class)
             
         if processed_df is not None and not processed_df.empty:
-            processed_df['유형'] = file_type # 교차검증을 위해 유형(행특/세특/창체) 데이터 추가 저장
+            processed_df['유형'] = file_type 
             all_results.append(processed_df)
 
     if all_results:
@@ -405,10 +423,10 @@ if st.button("🚀 전체 파일 분석 시작", type="primary", use_container_w
                 
             status.update(label="모든 파일 처리 완료!", state="complete", expanded=False)
 
+# 하나 이상의 그룹 데이터가 분석 완료되었을 경우에만 결과 표시
 if st.session_state.final_df_1 is not None or st.session_state.final_df_2 is not None:
     st.divider()
     
-    # 3개의 탭으로 분할
     tab1, tab2, tab3 = st.tabs(["📊 그룹 1 결과보기", "📊 그룹 2 결과보기", "🔄 교차 검증 결과 (그룹1 ↔ 그룹2)"])
     
     def render_result_tab(df, group_name):
@@ -435,7 +453,7 @@ if st.session_state.final_df_1 is not None or st.session_state.final_df_2 is not
                 key=f"download_btn_{group_name}" 
             )
         else:
-            st.info(f"{group_name}에 처리할 수 있는 정상적인 데이터가 없거나 업로드되지 않았습니다.")
+            st.info(f"{group_name}에 처리할 수 있는 정상적인 데이터가 없거나 분석되지 않았습니다.")
 
     with tab1:
         render_result_tab(st.session_state.final_df_1, "그룹1")
@@ -462,4 +480,4 @@ if st.session_state.final_df_1 is not None or st.session_state.final_df_2 is not
                 st.balloons()
                 st.success("🎉 두 그룹 간에 교차되는 중복(복붙) 문장이 발견되지 않았습니다!")
         else:
-            st.warning("교차 검증을 진행하려면 그룹 1과 그룹 2 모두에 파일이 업로드되어야 합니다.")
+            st.warning("교차 검증을 진행하려면 그룹 1과 그룹 2 모두 업로드 및 분석이 완료되어야 합니다.")
