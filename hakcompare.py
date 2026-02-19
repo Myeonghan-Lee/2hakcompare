@@ -32,7 +32,7 @@ def process_single_file(uploaded_file, file_name):
     uploaded_file.seek(0)
     df = pd.read_excel(uploaded_file, skiprows=4)
     
-    # [수정된 부분] 열 이름에 결측치나 숫자가 섞여 있을 경우를 대비해 문자로 변환 후 필터링
+    # 열 이름에 결측치나 숫자가 섞여 있을 경우를 대비해 문자로 변환 후 필터링
     df = df.loc[:, ~df.columns.astype(str).str.contains('^Unnamed', na=False)]
     
     # (3) 세특 vs 행특 맞춤형 전처리 로직
@@ -41,7 +41,8 @@ def process_single_file(uploaded_file, file_name):
         if '과 목' in df.columns:
             df = df[~df['과 목'].astype(str).str.contains('과 목|1학년|2학년|3학년', na=False)]
             
-        target_col_raw = [col for col in df.columns if '세부능력' in col.replace(" ", "")][0]
+        # [수정] 열 이름을 무조건 문자열(str)로 변환한 뒤 replace 적용
+        target_col_raw = [col for col in df.columns if '세부능력' in str(col).replace(" ", "")][0]
         df = df.dropna(subset=[target_col_raw])
         
         fill_cols = [col for col in ['과 목', '학 년', '학기', '번 호'] if col in df.columns]
@@ -52,9 +53,9 @@ def process_single_file(uploaded_file, file_name):
         
     else:
         # --- 행특 처리 ---
-        # 타겟 열 찾기
-        target_col_raw = [col for col in df.columns if '행동특성' in col.replace(" ", "")][0]
-        num_col_raw = [col for col in df.columns if '번' in col][0]
+        # [수정] 열 이름을 무조건 문자열(str)로 변환한 뒤 replace 및 탐색 적용
+        target_col_raw = [col for col in df.columns if '행동특성' in str(col).replace(" ", "")][0]
+        num_col_raw = [col for col in df.columns if '번' in str(col)][0]
         
         # 데이터 중간에 낀 반복 헤더 제거
         df = df[~df[num_col_raw].astype(str).str.contains('번 호|1학년|2학년|3학년|/', na=False)]
@@ -74,12 +75,14 @@ def process_single_file(uploaded_file, file_name):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
             
-    name_col = [col for col in df.columns if '성' in col and '명' in col]
+    # [수정] 컬럼 이름 탐색 시 str() 씌우기
+    name_col = [col for col in df.columns if '성' in str(col) and '명' in str(col)]
     if name_col:
         df = df.drop(columns=[name_col[0]])
         
     subject_col = '과 목'
-    num_col = [col for col in df.columns if '번' in col and '호' in col][0]
+    # [수정] 컬럼 이름 탐색 시 str() 씌우기
+    num_col = [col for col in df.columns if '번' in str(col) and '호' in str(col)][0]
     target_col = '세부능력 및 특기사항' 
     
     # (5) 끊어진 내용 병합
