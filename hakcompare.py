@@ -194,16 +194,25 @@ def process_chang(df_raw, grade_class):
     return df_grouped[['학년 반', '번호', '학기', '과목/영역', '시수', '내용']]
 
 def detect_duplicates(df):
-    """복붙(중복) 문장 탐지 및 그룹별 색상 할당"""
+    """복붙(중복) 문장 탐지 및 그룹별 배경/글자색 할당"""
     sentence_pattern = re.compile(r'[^.!?]+[.!?]')
     df['중복여부'] = False
     df['비고(중복문장)'] = ''
-    df['중복색상'] = '' 
+    df['중복배경색'] = '' 
+    df['중복글자색'] = ''
     
-    color_palette = [
-        '#ffb3ba', '#ffdfba', '#ffffba', '#baffc9', '#bae1ff', 
-        '#e8baff', '#ffbaff', '#ffc4e1', '#e2f0cb', '#ffcfd2',
-        '#d4f0f0', '#f3e8ff', '#ffebd6', '#e6fffa', '#ffe6f2'
+    # 🎨 (배경색, 글자색) 쌍 구성 - 가독성을 위해 파스텔 배경 + 어두운 텍스트 조합
+    color_pairs = [
+        ('#ffe6e6', '#cc0000'), # 연한 빨강 배경 / 진한 빨강 글씨
+        ('#e6f2ff', '#004080'), # 연한 파랑 배경 / 진한 파랑 글씨
+        ('#e6ffe6', '#006600'), # 연한 초록 배경 / 진한 초록 글씨
+        ('#fff2e6', '#cc6600'), # 연한 주황 배경 / 진한 주황 글씨
+        ('#f2e6ff', '#4d0099'), # 연한 보라 배경 / 진한 보라 글씨
+        ('#ffffe6', '#808000'), # 연한 노랑 배경 / 진한 올리브 글씨
+        ('#e6ffff', '#006666'), # 연한 청록 배경 / 진한 청록 글씨
+        ('#ffe6f2', '#99004d'), # 연한 분홍 배경 / 진한 자주 글씨
+        ('#f2ffe6', '#4d9900'), # 연한 연두 배경 / 진한 연두 글씨
+        ('#ebebe0', '#333333'), # 연한 회색 배경 / 진한 회색 글씨
     ]
     
     df['과목/영역'] = df['과목/영역'].fillna('기타')
@@ -223,7 +232,7 @@ def detect_duplicates(df):
         
         color_map = {}
         for i, dup_sent in enumerate(duplicate_sentences):
-            color_map[dup_sent] = color_palette[i % len(color_palette)]
+            color_map[dup_sent] = color_pairs[i % len(color_pairs)]
             
         for idx, row in group.iterrows():
             content = str(row['내용'])
@@ -234,7 +243,10 @@ def detect_duplicates(df):
                 df.at[idx, '중복여부'] = True
                 unique_dupes = list(set(found_duplicates))
                 df.at[idx, '비고(중복문장)'] = " / ".join(unique_dupes)
-                df.at[idx, '중복색상'] = color_map[unique_dupes[0]]
+                
+                bg_color, text_color = color_map[unique_dupes[0]]
+                df.at[idx, '중복배경색'] = bg_color
+                df.at[idx, '중복글자색'] = text_color
 
     return df
 
@@ -244,20 +256,21 @@ def to_excel_multiple_sheets(df_dict):
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for file_name, df in df_dict.items():
-            # 엑셀 시트명은 31자로 제한되고 특수문자 사용이 불가능하므로 이름 정제
             safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '', file_name)[:31]
-            
-            save_cols = [c for c in df.columns if c not in ['중복여부', '중복색상']]
+            save_cols = [c for c in df.columns if c not in ['중복여부', '중복배경색', '중복글자색']]
             
             def style_duplicate_excel(row):
                 styles = [''] * len(row)
-                if row.get('중복여부', False) and row.get('중복색상', ''):
-                    bg_color = row['중복색상']
+                if row.get('중복여부', False) and row.get('중복배경색', ''):
+                    bg_color = row['중복배경색']
+                    txt_color = row['중복글자색']
+                    
                     for col in ['과목/영역', '번호', '내용']:
                         if col in row.index:
                             try:
                                 idx = row.index.get_loc(col)
-                                styles[idx] = f'background-color: {bg_color}'
+                                # 엑셀에서도 배경색과 글자색(굵게) 동시 적용
+                                styles[idx] = f'background-color: {bg_color}; color: {txt_color}; font-weight: bold;'
                             except KeyError: pass
                     
                     if '비고(중복문장)' in row.index:
@@ -287,7 +300,7 @@ st.markdown("""
 
 **기능:**
   1. xlsx_data 파일 다운로드 및 업로드 시 **자동 분류 및 정리**
-  2. **복붙 의심 문장 그룹별 다른 색상 표시 (과목, 번호, 내용 강조)**
+  2. **복붙 의심 문장 그룹별 배경색/글자색 다르게 표시 (과목, 번호, 내용 강조)**
   3. **여러 파일 업로드 시 탭(Tab)으로 구분하여 표시**
 """)
 
@@ -298,7 +311,7 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files:
-    processed_data_dict = {} # 파일명별로 데이터프레임을 저장할 딕셔너리
+    processed_data_dict = {}
     
     with st.status("파일 분석 및 처리 중...", expanded=True) as status:
         for file in uploaded_files:
@@ -327,18 +340,13 @@ if uploaded_files:
                 continue
                 
             if processed_df is not None and not processed_df.empty:
-                # 개별 파일에 대해 중복 검사 및 정렬 수행
                 processed_df = processed_df.sort_values(by=['과목/영역', '번호'])
                 processed_df = detect_duplicates(processed_df)
-                
-                # 번호를 정수형(int)으로 변환
                 processed_df['번호'] = pd.to_numeric(processed_df['번호']).astype(int)
                 
-                # 컬럼 순서 지정
-                ordered_cols = ['학년 반', '학기', '과목/영역', '번호', '시수', '내용', '비고(중복문장)', '중복여부', '중복색상']
+                ordered_cols = ['학년 반', '학기', '과목/영역', '번호', '시수', '내용', '비고(중복문장)', '중복여부', '중복배경색', '중복글자색']
                 processed_df = processed_df[ordered_cols]
                 
-                # 딕셔너리에 저장
                 processed_data_dict[file.name] = processed_df
                 st.write(f"✅ {file.name} ({type_label} / {grade_class}) - {len(processed_df)}명 처리")
             else:
@@ -353,21 +361,21 @@ if uploaded_files:
         # 🎨 웹 화면 스타일링 함수
         def highlight_row_web(row):
             styles = [''] * len(row)
-            if row.get('중복여부', False) and row.get('중복색상', ''):
-                bg_color = row['중복색상']
+            if row.get('중복여부', False) and row.get('중복배경색', ''):
+                bg_color = row['중복배경색']
+                txt_color = row['중복글자색']
                 for col in ['과목/영역', '번호', '내용']:
                     if col in row.index:
                         try:
                             idx = row.index.get_loc(col)
-                            styles[idx] = f'background-color: {bg_color}'
+                            # 웹 화면에서도 배경색과 글자색(굵게) 동시 적용
+                            styles[idx] = f'background-color: {bg_color}; color: {txt_color}; font-weight: bold;'
                         except KeyError: pass
             return styles
         
-        # 탭 생성
         tab_names = list(processed_data_dict.keys())
         tabs = st.tabs(tab_names)
         
-        # 각 탭에 해당 파일의 데이터프레임 표시
         for tab, file_name in zip(tabs, tab_names):
             with tab:
                 df_to_show = processed_data_dict[file_name]
@@ -376,15 +384,14 @@ if uploaded_files:
                     column_config={
                         "시수": st.column_config.TextColumn("시수", width="small"),
                         "비고(중복문장)": st.column_config.TextColumn("⚠️ 복붙 의심 문장", width="medium"),
-                        "중복여부": None, # 화면에서 숨김
-                        "중복색상": None  # 화면에서 숨김
+                        "중복여부": None,
+                        "중복배경색": None,
+                        "중복글자색": None
                     },
                     use_container_width=True
                 )
         
         st.divider()
-        
-        # 통합 엑셀 다운로드 (시트 분리)
         excel_data = to_excel_multiple_sheets(processed_data_dict)
         
         st.download_button(
