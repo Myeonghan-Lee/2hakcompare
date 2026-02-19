@@ -4,6 +4,11 @@ import re
 import io
 
 # -----------------------------------------------------------------------------
+# 0. 페이지 기본 설정 (항상 최상단에 위치)
+# -----------------------------------------------------------------------------
+st.set_page_config(page_title="학생부 점검 도우미", layout="wide")
+
+# -----------------------------------------------------------------------------
 # 1. 공통 유틸리티 함수
 # -----------------------------------------------------------------------------
 
@@ -133,7 +138,7 @@ def process_kyo(df_raw, grade_class):
     return df_grouped[['학년 반', '번호', '학기', '과목/영역', '시수', '내용']]
 
 def process_chang(df_raw, grade_class):
-    """창의적 체험활동(자율/진로) 처리 - 수정됨"""
+    """창의적 체험활동(자율/진로) 처리"""
     header_idx = -1
     for i, row in df_raw.iterrows():
         row_str = row.astype(str).values
@@ -143,27 +148,21 @@ def process_chang(df_raw, grade_class):
             
     if header_idx == -1: return None
     
-    # [수정] 2단 헤더 병합 로직 (번호/성명이 위쪽 행에 있는 경우 대응)
-    # 현재 헤더(영역, 시간 등) 가져오기
+    # 2단 헤더 병합 로직
     cols = df_raw.iloc[header_idx].fillna('').astype(str).values.tolist()
     
-    # 바로 위 행(번호, 성명 등) 가져와서 빈칸 채우기
     if header_idx > 0:
         upper_row = df_raw.iloc[header_idx - 1].fillna('').astype(str).values.tolist()
         for i in range(len(cols)):
-            # 현재 컬럼명이 비어있거나 nan이면 위쪽 행의 값을 가져옴
             if cols[i].strip() == '' or cols[i].lower() == 'nan':
                 if i < len(upper_row) and upper_row[i].strip() != '' and upper_row[i].lower() != 'nan':
                     cols[i] = upper_row[i]
     
-    # 공백 제거
     cols = [c.replace(" ", "") for c in cols]
     
-    # 데이터 프레임 생성
     df = df_raw.iloc[header_idx+1:].copy()
     df.columns = cols
     
-    # 컬럼 매핑
     rename_map = {}
     for col in df.columns:
         if '번호' in col: rename_map[col] = '번호'
@@ -173,29 +172,22 @@ def process_chang(df_raw, grade_class):
     
     df = df.rename(columns=rename_map)
     
-    # [수정] 필수 컬럼 체크에 '번호' 추가
     if '번호' not in df.columns or '내용' not in df.columns or '과목/영역' not in df.columns:
         return None
 
-    # 데이터 정제
     df['번호'] = pd.to_numeric(df['번호'], errors='coerce')
-    
     df = df[df['과목/영역'] != '영 역']
     df = df[df['과목/영역'] != '영역']
     
     df['번호'] = df['번호'].ffill()
     df['과목/영역'] = df['과목/영역'].ffill()
     df['시수'] = df['시수'].ffill()
-    
     df = df.dropna(subset=['번호'])
     
-    # 진로활동 '희망분야' 행 제거
     df = df[df['내용'].astype(str) != '희망분야']
     df = df[~df['내용'].astype(str).str.contains('희망분야', na=False)]
-    
     df = df.dropna(subset=['내용'])
 
-    # 내용 병합
     df_grouped = df.groupby(['번호', '과목/영역', '시수'])['내용'].apply(lambda x: ' '.join(x.astype(str))).reset_index()
     
     df_grouped['학년 반'] = grade_class
@@ -204,12 +196,19 @@ def process_chang(df_raw, grade_class):
     return df_grouped[['학년 반', '번호', '학기', '과목/영역', '시수', '내용']]
 
 def detect_duplicates(df):
-    """복붙(중복) 문장 탐지"""
+    """복붙(중복) 문장 탐지 및 그룹별 색상 할당"""
     sentence_pattern = re.compile(r'[^.!?]+[.!?]')
     df['중복여부'] = False
     df['비고(중복문장)'] = ''
+    df['중복색상'] = '' 
     
-    # 과목/영역이 비어있는 경우(NaN) 처리
+    # 🎨 파스텔톤 컬러 팔레트
+    color_palette = [
+        '#ffb3ba', '#ffdfba', '#ffffba', '#baffc9', '#bae1ff', 
+        '#e8baff', '#ffbaff', '#ffc4e1', '#e2f0cb', '#ffcfd2',
+        '#d4f0f0', '#f3e8ff', '#ffebd6', '#e6fffa', '#ffe6f2'
+    ]
+    
     df['과목/영역'] = df['과목/영역'].fillna('기타')
     
     for subject, group in df.groupby('과목/영역'):
@@ -225,6 +224,11 @@ def detect_duplicates(df):
         
         duplicate_sentences = {s for s, count in sentence_counts.items() if count > 1}
         
+        # 중복 문장별 고유 색상 매핑
+        color_map = {}
+        for i, dup_sent in enumerate(duplicate_sentences):
+            color_map[dup_sent] = color_palette[i % len(color_palette)]
+            
         for idx, row in group.iterrows():
             content = str(row['내용'])
             sentences = [s.strip() for s in sentence_pattern.findall(content)]
@@ -234,28 +238,37 @@ def detect_duplicates(df):
                 df.at[idx, '중복여부'] = True
                 unique_dupes = list(set(found_duplicates))
                 df.at[idx, '비고(중복문장)'] = " / ".join(unique_dupes)
+                df.at[idx, '중복색상'] = color_map[unique_dupes[0]]
 
     return df
 
 def to_excel_with_style(df):
-    """엑셀 스타일링 및 저장"""
+    """엑셀 스타일링 및 저장 (특정 열만 색상 반영)"""
     output = io.BytesIO()
-    save_cols = [c for c in df.columns if c != '중복여부']
+    save_cols = [c for c in df.columns if c not in ['중복여부', '중복색상']]
     
-    def style_duplicate(row):
+    def style_duplicate_excel(row):
         styles = [''] * len(row)
-        if row.get('중복여부', False):
-            try:
-                content_idx = row.index.get_loc('내용')
-                styles[content_idx] = 'color: red; font-weight: bold;'
-            except: pass
-            try:
-                note_idx = row.index.get_loc('비고(중복문장)')
-                styles[note_idx] = 'color: red;'
-            except: pass
+        if row.get('중복여부', False) and row.get('중복색상', ''):
+            bg_color = row['중복색상']
+            # 🎨 과목/영역, 번호, 내용에만 배경색 적용
+            for col in ['과목/영역', '번호', '내용']:
+                if col in row.index:
+                    try:
+                        idx = row.index.get_loc(col)
+                        styles[idx] = f'background-color: {bg_color}'
+                    except KeyError: pass
+            
+            # 비고(중복문장) 열은 빨간색 텍스트
+            if '비고(중복문장)' in row.index:
+                try:
+                    note_idx = row.index.get_loc('비고(중복문장)')
+                    styles[note_idx] = 'color: red;'
+                except KeyError: pass
+                
         return styles
 
-    styler = df.style.apply(style_duplicate, axis=1)
+    styler = df.style.apply(style_duplicate_excel, axis=1)
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         styler.to_excel(writer, index=False, columns=save_cols, sheet_name='정리결과')
@@ -269,7 +282,6 @@ def to_excel_with_style(df):
 # -----------------------------------------------------------------------------
 # 3. 메인 앱 UI
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="학생부 점검 도우미", layout="wide")
 
 st.title("🏫 학생부 점검 도우미")
 st.markdown("""
@@ -277,7 +289,7 @@ st.markdown("""
 
 **기능:**
   1. xlsx_data 파일 다운로드 및 업로드 시 **자동 분류 및 정리**
-  2. **복붙 의심 문장 빨간색 표시**
+  2. **복붙 의심 문장 그룹별 다른 색상 표시 (과목, 번호, 내용 강조)**
 """)
 
 uploaded_files = st.file_uploader(
@@ -328,26 +340,36 @@ if uploaded_files:
         final_df = final_df.sort_values(by=['과목/영역', '번호'])
         final_df = detect_duplicates(final_df)
         
-        # 👇 [추가/수정된 부분] 번호를 정수형(int)으로 변환
-        final_df['번호'] = final_df['번호'].astype(int)
+        # 🔢 번호를 정수형(int)으로 변환
+        final_df['번호'] = pd.to_numeric(final_df['번호']).astype(int)
         
-        # 👇 [추가/수정된 부분] 원하는 컬럼 순서로 재배치 
-        # (중복여부는 스타일링을 위해 내부적으로 필요하므로 맨 끝에 유지합니다)
-        ordered_cols = ['학년 반', '학기', '과목/영역', '번호', '시수', '내용', '비고(중복문장)', '중복여부']
+        # 📌 요청하신 컬럼 순서 지정
+        ordered_cols = ['학년 반', '학기', '과목/영역', '번호', '시수', '내용', '비고(중복문장)', '중복여부', '중복색상']
         final_df = final_df[ordered_cols]
         
         st.divider()
         st.subheader("📊 결과 미리보기")
         
-        def highlight_row(row):
-            return ['background-color: #ffe6e6' if row['중복여부'] else '' for _ in row]
+        # 🎨 웹 화면 스타일링 함수
+        def highlight_row_web(row):
+            styles = [''] * len(row)
+            if row.get('중복여부', False) and row.get('중복색상', ''):
+                bg_color = row['중복색상']
+                for col in ['과목/영역', '번호', '내용']:
+                    if col in row.index:
+                        try:
+                            idx = row.index.get_loc(col)
+                            styles[idx] = f'background-color: {bg_color}'
+                        except KeyError: pass
+            return styles
             
         st.dataframe(
-            final_df.style.apply(highlight_row, axis=1),
+            final_df.style.apply(highlight_row_web, axis=1),
             column_config={
                 "시수": st.column_config.TextColumn("시수", width="small"),
                 "비고(중복문장)": st.column_config.TextColumn("⚠️ 복붙 의심 문장", width="medium"),
-                "중복여부": None  # 화면에서는 중복여부 컬럼 숨김
+                "중복여부": None, # 화면에서 숨김
+                "중복색상": None  # 화면에서 숨김
             },
             use_container_width=True
         )
