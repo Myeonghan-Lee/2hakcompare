@@ -328,6 +328,14 @@ if uploaded_files:
         final_df = final_df.sort_values(by=['과목/영역', '번호'])
         final_df = detect_duplicates(final_df)
         
+        # 👇 [추가/수정된 부분] 번호를 정수형(int)으로 변환
+        final_df['번호'] = final_df['번호'].astype(int)
+        
+        # 👇 [추가/수정된 부분] 원하는 컬럼 순서로 재배치 
+        # (중복여부는 스타일링을 위해 내부적으로 필요하므로 맨 끝에 유지합니다)
+        ordered_cols = ['학년 반', '학기', '과목/영역', '번호', '시수', '내용', '비고(중복문장)', '중복여부']
+        final_df = final_df[ordered_cols]
+        
         st.divider()
         st.subheader("📊 결과 미리보기")
         
@@ -339,7 +347,7 @@ if uploaded_files:
             column_config={
                 "시수": st.column_config.TextColumn("시수", width="small"),
                 "비고(중복문장)": st.column_config.TextColumn("⚠️ 복붙 의심 문장", width="medium"),
-                "중복여부": None
+                "중복여부": None  # 화면에서는 중복여부 컬럼 숨김
             },
             use_container_width=True
         )
