@@ -9,7 +9,7 @@ st.set_page_config(page_title="세특/행특 데이터 전처리 및 교차 검�
 st.title("📄 나이스 세특/행특 데이터 종합 분석기")
 st.write("나이스 파일(세특 또는 행특)을 업로드하면 **파일 종류를 자동 인식**하여 정제 규격을 통일하고, **내부 중복 검사** 및 **파일 간 복붙 의심(교차 검증)**을 수행합니다.")
 
-# 1. 단일 파일 정제 및 내부 중복 검사 함수 (세특/행특 자동 구분 적용)
+# 1. 단일 파일 정제 및 내부 중복 검사 함수
 def process_single_file(uploaded_file, file_name):
     # (1) 파일 종류 판별 및 '반' 정보 추출을 위해 파일의 첫 5줄만 먼저 읽기
     uploaded_file.seek(0)
@@ -31,7 +31,9 @@ def process_single_file(uploaded_file, file_name):
     # (2) 실제 데이터 읽기
     uploaded_file.seek(0)
     df = pd.read_excel(uploaded_file, skiprows=4)
-    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+    
+    # [수정된 부분] 열 이름에 결측치나 숫자가 섞여 있을 경우를 대비해 문자로 변환 후 필터링
+    df = df.loc[:, ~df.columns.astype(str).str.contains('^Unnamed', na=False)]
     
     # (3) 세특 vs 행특 맞춤형 전처리 로직
     if not is_haengteuk:
@@ -50,22 +52,21 @@ def process_single_file(uploaded_file, file_name):
         
     else:
         # --- 행특 처리 ---
-        # 타겟 열 찾기 (예: '행 동 특 성   및   종 합 의 견')
+        # 타겟 열 찾기
         target_col_raw = [col for col in df.columns if '행동특성' in col.replace(" ", "")][0]
         num_col_raw = [col for col in df.columns if '번' in col][0]
         
-        # 데이터 중간에 낀 반복 헤더(번 호, 성명) 제거
+        # 데이터 중간에 낀 반복 헤더 제거
         df = df[~df[num_col_raw].astype(str).str.contains('번 호|1학년|2학년|3학년|/', na=False)]
         df = df.dropna(subset=[target_col_raw])
         
         fill_cols = [col for col in ['학 년', '번 호'] if col in df.columns]
         df[fill_cols] = df[fill_cols].ffill()
         
-        # 사용자 요청에 따른 행특 전용 열 추가 및 맵핑
+        # 행특 전용 열 추가 및 맵핑
         df['과 목'] = '행동특성'
         df['학기'] = class_num if class_num else 1  # '반' 정보를 '학기' 열에 삽입
         
-        # 통합 처리를 위해 내용 열 이름 통일 (내용은 행특이 들어감)
         df.rename(columns={target_col_raw: '세부능력 및 특기사항'}, inplace=True)
 
     # (4) 공통 전처리: 타입 변환 및 이름(성명) 열 삭제
@@ -79,9 +80,9 @@ def process_single_file(uploaded_file, file_name):
         
     subject_col = '과 목'
     num_col = [col for col in df.columns if '번' in col and '호' in col][0]
-    target_col = '세부능력 및 특기사항' # 통합된 이름
+    target_col = '세부능력 및 특기사항' 
     
-    # (5) 끊어진 내용 병합 (페이지 넘어가며 잘린 텍스트 연결)
+    # (5) 끊어진 내용 병합
     groupby_cols = [col for col in [subject_col, '학 년', '학기', num_col] if col in df.columns]
     df = df.groupby(groupby_cols, as_index=False).agg({
         target_col: lambda x: "".join(x.astype(str))
@@ -121,12 +122,12 @@ def process_single_file(uploaded_file, file_name):
         if found_dups:
             df.at[idx, '중복 문장'] = "\n".join(found_dups)
 
-    # (7) 컬럼 순서 재배치 (요청하신 최종 규격 적용)
+    # (7) 컬럼 순서 재배치
     ordered_cols = ['학 년', '학기', subject_col, num_col, target_col, '중복 문장']
     ordered_cols = [col for col in ordered_cols if col in df.columns] 
     df = df[ordered_cols]
 
-    # (8) 미리보기 스타일링 및 엑셀 파일 생성 로직
+    # (8) 미리보기 스타일링 및 엑셀 파일 생성
     bg_colors = ['#ffe6e6', '#e6ffe6', '#e6e6ff', '#ffffe6', '#ffe6ff', '#e6ffff', '#fff2e6', '#f2e6ff', '#e6f2ff', '#e6fffa']
     subject_dup_bg = {}
     for subj, dups in internal_dups.items():
@@ -162,7 +163,6 @@ def process_single_file(uploaded_file, file_name):
     
     header_format = workbook.add_format({'bold': True, 'bg_color': '#E0E0E0', 'border': 1, 'align': 'center'})
     
-    # 엑셀 헤더 작성 시 '학기' 열의 이름을 행특인 경우 '반'으로 동적 표시할 수도 있으나, 통일성을 위해 DataFrame 컬럼명을 그대로 씁니다.
     for col_num, header in enumerate(df.columns):
         display_header = header
         if is_haengteuk and header == '학기':
@@ -227,11 +227,9 @@ st.divider()
 
 if file1 is not None and file2 is not None:
     with st.spinner('파일 양식을 판별하여 데이터를 정제 및 비교 분석 중입니다...'):
-        # 각 파일 개별 처리 (자동 양식 판별 포함)
         style1, excel1, map1 = process_single_file(file1, "첫 번째 파일")
         style2, excel2, map2 = process_single_file(file2, "두 번째 파일")
         
-        # 교차 검증 (Cross-check) 로직
         cross_data = []
         common_subjects = set(map1.keys()).intersection(set(map2.keys()))
         
@@ -251,7 +249,6 @@ if file1 is not None and file2 is not None:
         if not cross_df.empty:
             cross_df = cross_df.sort_values(by=["과목", "동일 문장"]).reset_index(drop=True)
             
-            # 교차 검증 엑셀 생성
             cross_output = io.BytesIO()
             with pd.ExcelWriter(cross_output, engine='xlsxwriter') as writer:
                 cross_df.to_excel(writer, index=False, sheet_name='교차검증_결과')
@@ -269,7 +266,6 @@ if file1 is not None and file2 is not None:
                 worksheet.set_column(2, 3, 20)
             cross_excel_data = cross_output.getvalue()
             
-    # --- 탭(Tabs)을 이용한 화면 분할 ---
     tab1, tab2, tab3 = st.tabs(["📊 첫 번째 파일 정제 결과", "📊 두 번째 파일 정제 결과", "🔍 교차 검증(두 파일 비교) 결과"])
     
     with tab1:
