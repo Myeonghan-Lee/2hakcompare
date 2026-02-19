@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import re
 import io
-import itertools
 
 # -----------------------------------------------------------------------------
 # 0. 페이지 기본 설정
@@ -39,15 +38,17 @@ def extract_grade_class(df_raw):
     return "미상"
 
 def detect_file_type(df_raw):
-    """파일 유형 감지 (행특 / 세특 / 창체)"""
+    """파일 유형 감지 (행특 / 세특 / 창체) - 공백 완벽 제거 적용"""
     limit = min(20, len(df_raw))
     text_sample = df_raw.iloc[:limit].astype(str).to_string()
+    # 보이지 않는 공백, 줄바꿈 모두 제거 후 검사
+    clean_sample = re.sub(r'\s+', '', text_sample)
     
-    if "창의적" in text_sample and ("체험활동" in text_sample or "자율" in text_sample):
+    if "창의적" in clean_sample and ("체험활동" in clean_sample or "자율" in clean_sample or "진로" in clean_sample):
         return "CHANG"
-    elif "행 동 특 성" in text_sample or "행동특성" in text_sample or "종합의견" in text_sample:
+    elif "행동특성" in clean_sample or "종합의견" in clean_sample:
         return "HANG"
-    elif "세부능력" in text_sample or "특기사항" in text_sample or "과 목" in text_sample:
+    elif "세부능력" in clean_sample or "특기사항" in clean_sample or "과목" in clean_sample:
         return "KYO"
     else:
         return "UNKNOWN"
@@ -57,31 +58,36 @@ def detect_file_type(df_raw):
 # -----------------------------------------------------------------------------
 
 def process_hang(df_raw, grade_class):
+    """행동특성 처리"""
     header_idx = -1
     for i, row in df_raw.iterrows():
-        row_str = row.astype(str).values
-        if any('번' in s and '호' in s for s in row_str) and any('성' in s and '명' in s for s in row_str):
+        # 열의 모든 텍스트를 하나로 합치고 공백 제거하여 검사 (오류 방지)
+        row_str = re.sub(r'\s+', '', ''.join(row.astype(str).values))
+        if '번호' in row_str and '성명' in row_str:
             header_idx = i
             break
     
     if header_idx == -1: return None
 
     df = df_raw.iloc[header_idx+1:].copy()
-    df.columns = df_raw.iloc[header_idx].astype(str).str.replace(" ", "")
+    # 컬럼명의 특수 공백/엔터 모두 제거
+    df.columns = df_raw.iloc[header_idx].astype(str).str.replace(r"\s+", "", regex=True)
     
     rename_map = {}
     for col in df.columns:
         if '번호' in col: rename_map[col] = '번호'
-        elif '행동특성' in col: rename_map[col] = '내용'
-        elif '종합의견' in col: rename_map[col] = '내용'
+        elif '행동특성' in col or '종합의견' in col: rename_map[col] = '내용'
     df = df.rename(columns=rename_map)
     
     if '번호' not in df.columns or '내용' not in df.columns: return None
         
     df['번호'] = pd.to_numeric(df['번호'], errors='coerce')
     df = df[df['내용'].notna()]
-    df = df[~df['내용'].str.contains('행 동 특 성', na=False)]
-    df = df[~df['내용'].str.contains('종 합 의 견', na=False)]
+    
+    # 반복된 헤더 행 제거 (안전한 필터링)
+    clean_content = df['내용'].astype(str).str.replace(r'\s+', '', regex=True)
+    df = df[~clean_content.str.contains('행동특성', na=False)]
+    df = df[~clean_content.str.contains('종합의견', na=False)]
     
     df['번호'] = df['번호'].ffill()
     df = df.dropna(subset=['번호'])
@@ -96,32 +102,34 @@ def process_hang(df_raw, grade_class):
     return df_grouped[['학년 반', '번호', '학기', '과목/영역', '시수', '내용']]
 
 def process_kyo(df_raw, grade_class):
+    """세부능력(교과) 처리"""
     header_idx = -1
     for i, row in df_raw.iterrows():
-        row_str = row.astype(str).values
-        if any('과' in s and '목' in s for s in row_str) and any('세부능력' in s for s in row_str):
+        row_str = re.sub(r'\s+', '', ''.join(row.astype(str).values))
+        if '과목' in row_str and '세부능력' in row_str:
             header_idx = i
             break
             
     if header_idx == -1: return None
         
     df = df_raw.iloc[header_idx+1:].copy()
-    df.columns = df_raw.iloc[header_idx].astype(str).str.replace(" ", "")
+    df.columns = df_raw.iloc[header_idx].astype(str).str.replace(r"\s+", "", regex=True)
     
     rename_map = {}
     for col in df.columns:
         if '과목' in col: rename_map[col] = '과목/영역'
         elif '학기' in col: rename_map[col] = '학기'
         elif '번호' in col: rename_map[col] = '번호'
-        elif '세부능력' in col: rename_map[col] = '내용'
-        elif '특기사항' in col: rename_map[col] = '내용'
+        elif '세부능력' in col or '특기사항' in col: rename_map[col] = '내용'
     df = df.rename(columns=rename_map)
     
     if '내용' not in df.columns or '과목/영역' not in df.columns: return None
 
     df['번호'] = pd.to_numeric(df['번호'], errors='coerce')
-    df = df[df['과목/영역'] != '과 목']
-    df = df[df['과목/영역'] != '과목']
+    
+    clean_subject = df['과목/영역'].astype(str).str.replace(r'\s+', '', regex=True)
+    df = df[clean_subject != '과목']
+    
     df['번호'] = df['번호'].ffill()
     df['과목/영역'] = df['과목/영역'].ffill()
     df['학기'] = df['학기'].ffill()
@@ -136,10 +144,11 @@ def process_kyo(df_raw, grade_class):
     return df_grouped[['학년 반', '번호', '학기', '과목/영역', '시수', '내용']]
 
 def process_chang(df_raw, grade_class):
+    """창의적 체험활동(자율/진로) 처리"""
     header_idx = -1
     for i, row in df_raw.iterrows():
-        row_str = row.astype(str).values
-        if any('영' in s and '역' in s for s in row_str) and any('시' in s and '간' in s for s in row_str):
+        row_str = re.sub(r'\s+', '', ''.join(row.astype(str).values))
+        if '영역' in row_str and '시간' in row_str:
             header_idx = i
             break
             
@@ -154,7 +163,7 @@ def process_chang(df_raw, grade_class):
                 if i < len(upper_row) and upper_row[i].strip() != '' and upper_row[i].lower() != 'nan':
                     cols[i] = upper_row[i]
     
-    cols = [c.replace(" ", "") for c in cols]
+    cols = [re.sub(r"\s+", "", c) for c in cols]
     
     df = df_raw.iloc[header_idx+1:].copy()
     df.columns = cols
@@ -172,16 +181,17 @@ def process_chang(df_raw, grade_class):
         return None
 
     df['번호'] = pd.to_numeric(df['번호'], errors='coerce')
-    df = df[df['과목/영역'] != '영 역']
-    df = df[df['과목/영역'] != '영역']
+    
+    clean_subject = df['과목/영역'].astype(str).str.replace(r'\s+', '', regex=True)
+    df = df[clean_subject != '영역']
     
     df['번호'] = df['번호'].ffill()
     df['과목/영역'] = df['과목/영역'].ffill()
     df['시수'] = df['시수'].ffill()
     df = df.dropna(subset=['번호'])
     
-    df = df[df['내용'].astype(str) != '희망분야']
-    df = df[~df['내용'].astype(str).str.contains('희망분야', na=False)]
+    clean_content = df['내용'].astype(str).str.replace(r'\s+', '', regex=True)
+    df = df[clean_content != '희망분야']
     df = df.dropna(subset=['내용'])
 
     df_grouped = df.groupby(['번호', '과목/영역', '시수'])['내용'].apply(lambda x: ' '.join(x.astype(str))).reset_index()
@@ -246,7 +256,6 @@ def cross_validate_files(df1, df2, name1, name2):
     sentence_pattern = re.compile(r'[^.!?]+[.!?]')
     cross_results = []
     
-    # 두 파일에 공통으로 존재하는 과목/영역 찾기
     subjects1 = set(df1['과목/영역'].dropna().unique())
     subjects2 = set(df2['과목/영역'].dropna().unique())
     common_subjects = subjects1.intersection(subjects2)
@@ -255,17 +264,15 @@ def cross_validate_files(df1, df2, name1, name2):
         group1 = df1[df1['과목/영역'] == subj]
         group2 = df2[df2['과목/영역'] == subj]
         
-        # 파일 1의 문장들 수집 (문장 -> 학생정보 리스트)
         sent_map1 = {}
         for _, row in group1.iterrows():
             content = str(row['내용'])
             student_info = f"{row['학년 반']} {row['번호']}번"
             for s in [s.strip() for s in sentence_pattern.findall(content)]:
-                if len(s) < 10: continue # 10자 미만 무시
+                if len(s) < 10: continue
                 if s not in sent_map1: sent_map1[s] = []
                 sent_map1[s].append(student_info)
                 
-        # 파일 2의 문장들 수집
         sent_map2 = {}
         for _, row in group2.iterrows():
             content = str(row['내용'])
@@ -275,10 +282,8 @@ def cross_validate_files(df1, df2, name1, name2):
                 if s not in sent_map2: sent_map2[s] = []
                 sent_map2[s].append(student_info)
                 
-        # 교차 중복된 문장 찾기 (교집합)
         common_sentences = set(sent_map1.keys()).intersection(set(sent_map2.keys()))
         
-        # 결과 리스트에 추가 (과목 내에서 동일 문장이 여러 개면 행 추가)
         for s in common_sentences:
             students1 = ", ".join(list(set(sent_map1[s])))
             students2 = ", ".join(list(set(sent_map2[s])))
@@ -292,7 +297,6 @@ def cross_validate_files(df1, df2, name1, name2):
     if cross_results:
         return pd.DataFrame(cross_results).sort_values(by=['과목/영역'])
     else:
-        # 중복이 없을 경우 빈 데이터프레임 반환
         return pd.DataFrame(columns=['과목/영역', '동일 문장', f'첫번째 파일({name1}) 학생반 번호', f'두번째 파일({name2}) 학생반 번호'])
 
 def to_excel_multiple_sheets(df_dict, cross_df=None):
@@ -332,16 +336,14 @@ def to_excel_multiple_sheets(df_dict, cross_df=None):
                 width = 50 if '내용' in col or '비고' in col else 12
                 worksheet.column_dimensions[chr(65 + idx)].width = width
                 
-        # 교차 점검 결과 시트 추가
         if cross_df is not None and not cross_df.empty:
             cross_sheet_name = "교차점검결과"
             cross_df.to_excel(writer, index=False, sheet_name=cross_sheet_name)
             worksheet = writer.sheets[cross_sheet_name]
-            # 열 너비 조정
-            worksheet.column_dimensions['A'].width = 15 # 과목/영역
-            worksheet.column_dimensions['B'].width = 60 # 동일 문장
-            worksheet.column_dimensions['C'].width = 20 # 첫번째 파일 학생
-            worksheet.column_dimensions['D'].width = 20 # 두번째 파일 학생
+            worksheet.column_dimensions['A'].width = 15 
+            worksheet.column_dimensions['B'].width = 60 
+            worksheet.column_dimensions['C'].width = 20 
+            worksheet.column_dimensions['D'].width = 20 
 
     return output.getvalue()
 
@@ -404,6 +406,8 @@ if uploaded_files:
                 
                 processed_data_dict[file.name] = processed_df
                 st.write(f"✅ {file.name} ({type_label} / {grade_class}) - {len(processed_df)}명 처리")
+            else:
+                st.warning(f"⚠️ {file.name}: 데이터 추출 실패 (형식이 맞지 않습니다.)")
 
         status.update(label="모든 파일 처리 완료!", state="complete", expanded=False)
 
@@ -411,7 +415,6 @@ if uploaded_files:
         st.divider()
         st.subheader("📊 결과 미리보기")
         
-        # 교차 점검 로직 실행 (파일이 2개 이상일 때, 처음 두 파일 기준)
         cross_df = None
         file_names = list(processed_data_dict.keys())
         
@@ -420,7 +423,6 @@ if uploaded_files:
             df1, df2 = processed_data_dict[name1], processed_data_dict[name2]
             cross_df = cross_validate_files(df1, df2, name1, name2)
             
-        # 탭 구성 (파일별 탭 + 교차점검 탭)
         tab_names = file_names.copy()
         if cross_df is not None:
             tab_names.append("🚨 교차 점검 결과")
@@ -440,11 +442,9 @@ if uploaded_files:
                         except KeyError: pass
             return styles
         
-        # 탭 콘텐츠 채우기
         for i, tab in enumerate(tabs):
             with tab:
                 if i < len(file_names):
-                    # 개별 파일 탭
                     file_name = file_names[i]
                     df_to_show = processed_data_dict[file_name]
                     st.dataframe(
@@ -457,7 +457,6 @@ if uploaded_files:
                         use_container_width=True
                     )
                 else:
-                    # 교차 점검 결과 탭
                     if cross_df is not None and not cross_df.empty:
                         st.warning(f"⚠️ {name1} 과(와) {name2} 사이에 내용이 중복된 문장들입니다.")
                         st.dataframe(
