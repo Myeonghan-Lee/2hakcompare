@@ -33,18 +33,27 @@ def extract_grade_class(df_raw):
     return "미상"
 
 def detect_file_type(df_raw):
-    """파일 유형 감지 (행특 / 세특 / 창체)"""
+    """파일 유형 감지 (행특 / 세특 / 창체) - 헤더 기반 정확한 판정"""
     limit = min(20, len(df_raw))
-    text_sample = df_raw.iloc[:limit].astype(str).to_string()
     
-    if "창의적" in text_sample and ("체험활동" in text_sample or "자율" in text_sample):
-        return "CHANG"
-    elif "행 동 특 성" in text_sample or "행동특성" in text_sample or "종합의견" in text_sample:
-        return "HANG"
-    elif "세부능력" in text_sample or "특기사항" in text_sample or "과 목" in text_sample:
-        return "KYO"
-    else:
-        return "UNKNOWN"
+    # 방법: 실제 헤더 행의 키워드로 판정 (본문 내용 제외)
+    for i in range(limit):
+        row_str = " ".join(df_raw.iloc[i].astype(str).values)
+        
+        # 창체: 헤더에 "영역"과 "시간"/"시수"가 함께 있는 경우
+        if ("영" in row_str and "역" in row_str) and ("시" in row_str and "간" in row_str):
+            return "CHANG"
+        
+        # 행특: 헤더/제목에 "행동특성" 또는 "종합의견"이 있는 경우
+        if "행 동 특 성" in row_str or "행동특성" in row_str or "종합의견" in row_str:
+            return "HANG"
+        
+        # 세특: 헤더에 "과목"과 "세부능력"이 함께 있는 경우  
+        if ("과" in row_str and "목" in row_str) and "세부능력" in row_str:
+            return "KYO"
+    
+    return "UNKNOWN"
+
 
 # -----------------------------------------------------------------------------
 # 2. 데이터 처리 로직 (행특 / 세특 / 창체)
