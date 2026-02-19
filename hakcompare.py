@@ -190,7 +190,7 @@ def process_chang(df_raw, grade_class):
     return df_grouped
 
 # -----------------------------------------------------------------------------
-# 3. 중복 탐지 및 엑셀 스타일 로직
+# 3. 중복 탐지 및 교차 검증 로직
 # -----------------------------------------------------------------------------
 
 COLOR_PALETTE = [
@@ -209,7 +209,7 @@ def detect_duplicates(df):
     color_idx = 0
     duplicate_color_map = {}
     
-    for subject, group in df.groupby('과목/영역'):
+    for subject, group in df.groupby(['유형', '과목/영역']):
         if len(group) < 2: continue
         
         sentence_counts = {}
@@ -237,9 +237,75 @@ def detect_duplicates(df):
                 df.at[idx, '복붙 의심 문장'] = " / ".join(unique_dupes)
                 df.at[idx, '색상'] = duplicate_color_map[unique_dupes[0]]
 
-    ordered_cols = ['학년 반', '학기', '과목/영역', '번호', '시수', '내용', '복붙 의심 문장', '중복여부', '색상']
+    ordered_cols = ['학년 반', '학기', '과목/영역', '번호', '시수', '내용', '복붙 의심 문장', '중복여부', '색상', '유형']
     final_cols = [c for c in ordered_cols if c in df.columns] 
     return df[final_cols]
+
+def get_sentence_map(df):
+    """데이터프레임 내의 문장별 사용 내역을 해시맵으로 추출 (교차 검증용)"""
+    sent_map = {}
+    for idx, row in df.iterrows():
+        subj = (row.get('유형', ''), row.get('과목/영역', ''))
+        content = str(row['내용'])
+        grade_class = row['학년 반']
+        num = row['번호']
+        sentences = [s.strip() for s in re.split(r'[.!?\n]+', content) if len(s.strip()) >= 10]
+        for s in sentences:
+            if subj not in sent_map:
+                sent_map[subj] = {}
+            if s not in sent_map[subj]:
+                sent_map[subj][s] = {}
+            if grade_class not in sent_map[subj][s]:
+                sent_map[subj][s][grade_class] = []
+            if num not in sent_map[subj][s][grade_class]:
+                sent_map[subj][s][grade_class].append(num)
+    return sent_map
+
+@st.cache_data
+def run_cross_validation(df1, df2):
+    """그룹1과 그룹2 사이의 동일 유형 데이터 교차 검증"""
+    if df1 is None or df2 is None or df1.empty or df2.empty:
+        return None
+    
+    map1 = get_sentence_map(df1)
+    map2 = get_sentence_map(df2)
+    
+    cross_results = []
+    
+    # 두 그룹에 공통으로 존재하는 (유형, 과목/영역) 쌍을 탐색
+    for subj in set(map1.keys()).intersection(set(map2.keys())):
+        type_val, subject = subj
+        sentences1 = map1[subj]
+        sentences2 = map2[subj]
+        
+        # 두 그룹 모두에서 사용된 동일한 문장 탐색
+        common_sentences = set(sentences1.keys()).intersection(set(sentences2.keys()))
+        
+        for s in common_sentences:
+            # 그룹 1 사용자 서식화 (예: [1학년 1반] 3번, 5번)
+            g1_usage = []
+            for gc, nums in sentences1[s].items():
+                nums_str = ", ".join([f"{n}번" for n in sorted(nums)])
+                g1_usage.append(f"[{gc}] {nums_str}")
+            g1_str = " \n ".join(g1_usage)
+            
+            # 그룹 2 사용자 서식화
+            g2_usage = []
+            for gc, nums in sentences2[s].items():
+                nums_str = ", ".join([f"{n}번" for n in sorted(nums)])
+                g2_usage.append(f"[{gc}] {nums_str}")
+            g2_str = " \n ".join(g2_usage)
+            
+            cross_results.append({
+                '과목/영역': subject,
+                '복붙 의심 문장': s,
+                '그룹1 파일의 학년 반': g1_str,
+                '그룹 2 파일의 학년 반': g2_str
+            })
+            
+    if cross_results:
+        return pd.DataFrame(cross_results)
+    return None
 
 def style_dataframe(df_to_style):
     def row_style(row):
@@ -251,7 +317,8 @@ def style_dataframe(df_to_style):
                     styles[row.index.get_loc(target_col)] = bg_color
         return styles
 
-    display_cols = [c for c in df_to_style.columns if c not in ['중복여부', '색상']]
+    # 화면 표시 및 엑셀 다운로드 시 시스템용 숨김 컬럼 제외
+    display_cols = [c for c in df_to_style.columns if c not in ['중복여부', '색상', '유형']]
     return df_to_style.style.apply(row_style, axis=1), display_cols
 
 @st.cache_data
@@ -278,16 +345,15 @@ st.markdown("""
 **지원내용:** 행특, 세특(교과), 창체(자율/진로)
 
 **기능:**
-  1. xlsx_data 파일 다운로드 및 업로드 시 **자동 분류 및 정리**
-  2. **복붙 의심 문장 색상 분류 표시** (같은 중복 문장끼리 같은 색상)
-  3. **두 개의 그룹(예: 1반/2반) 분리 업로드 및 탭 비교**
+  1. xlsx_data 파일 업로드 시 **자동 분류 및 정리**
+  2. **그룹 내 복붙 의심 문장 색상 표시**
+  3. **두 그룹 간의 교차 검증 지원** (다른 파일에 복붙한 사례 색출)
 """)
 
 # 두 그룹의 결과 저장을 위한 세션 상태 초기화
 if 'final_df_1' not in st.session_state: st.session_state.final_df_1 = None
 if 'final_df_2' not in st.session_state: st.session_state.final_df_2 = None
 
-# 두 개의 업로더를 나란히 배치
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("📁 그룹 1 파일")
@@ -297,7 +363,6 @@ with col2:
     uploaded_files_2 = st.file_uploader("그룹 2에 처리할 파일을 올려주세요", accept_multiple_files=True, type=['xlsx', 'xls', 'csv'], key="uploader_2")
 
 def process_uploaded_files(files):
-    """여러 파일을 일괄 분석하고 중복 탐지까지 완료하는 통합 함수"""
     all_results = []
     for file in files:
         df_raw = load_data(file)
@@ -316,6 +381,7 @@ def process_uploaded_files(files):
             processed_df = process_chang(df_raw, grade_class)
             
         if processed_df is not None and not processed_df.empty:
+            processed_df['유형'] = file_type # 교차검증을 위해 유형(행특/세특/창체) 데이터 추가 저장
             all_results.append(processed_df)
 
     if all_results:
@@ -324,7 +390,6 @@ def process_uploaded_files(files):
         return detect_duplicates(final_df)
     return None
 
-# 실행 버튼
 if st.button("🚀 전체 파일 분석 시작", type="primary", use_container_width=True):
     if not uploaded_files_1 and not uploaded_files_2:
         st.warning("분석할 파일을 하나 이상 업로드해주세요.")
@@ -340,14 +405,12 @@ if st.button("🚀 전체 파일 분석 시작", type="primary", use_container_w
                 
             status.update(label="모든 파일 처리 완료!", state="complete", expanded=False)
 
-# 결과 표시 영역 (탭 구조)
 if st.session_state.final_df_1 is not None or st.session_state.final_df_2 is not None:
     st.divider()
     
-    # 탭 생성
-    tab1, tab2 = st.tabs(["📊 그룹 1 결과보기", "📊 그룹 2 결과보기"])
+    # 3개의 탭으로 분할
+    tab1, tab2, tab3 = st.tabs(["📊 그룹 1 결과보기", "📊 그룹 2 결과보기", "🔄 교차 검증 결과 (그룹1 ↔ 그룹2)"])
     
-    # 공통 출력 함수 (DataFrame 및 다운로드 버튼)
     def render_result_tab(df, group_name):
         if df is not None:
             styler, display_cols = style_dataframe(df)
@@ -369,7 +432,7 @@ if st.session_state.final_df_1 is not None or st.session_state.final_df_2 is not
                 data=excel_data,
                 file_name=f"생기부_{group_name}_정리결과.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"download_btn_{group_name}" # 다운로드 버튼 식별자 충돌 방지
+                key=f"download_btn_{group_name}" 
             )
         else:
             st.info(f"{group_name}에 처리할 수 있는 정상적인 데이터가 없거나 업로드되지 않았습니다.")
@@ -379,3 +442,24 @@ if st.session_state.final_df_1 is not None or st.session_state.final_df_2 is not
         
     with tab2:
         render_result_tab(st.session_state.final_df_2, "그룹2")
+        
+    with tab3:
+        if st.session_state.final_df_1 is not None and st.session_state.final_df_2 is not None:
+            cross_df = run_cross_validation(st.session_state.final_df_1, st.session_state.final_df_2)
+            if cross_df is not None and not cross_df.empty:
+                st.success(f"⚠️ 두 그룹 사이에서 총 **{len(cross_df)}개**의 동일 문장이 발견되었습니다.")
+                st.dataframe(
+                    cross_df,
+                    column_config={
+                        "복붙 의심 문장": st.column_config.TextColumn("복붙 의심 문장", width="large"),
+                        "그룹1 파일의 학년 반": st.column_config.TextColumn("그룹1 파일의 학년 반", width="medium"),
+                        "그룹 2 파일의 학년 반": st.column_config.TextColumn("그룹 2 파일의 학년 반", width="medium"),
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.balloons()
+                st.success("🎉 두 그룹 간에 교차되는 중복(복붙) 문장이 발견되지 않았습니다!")
+        else:
+            st.warning("교차 검증을 진행하려면 그룹 1과 그룹 2 모두에 파일이 업로드되어야 합니다.")
